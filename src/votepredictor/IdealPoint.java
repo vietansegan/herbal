@@ -319,9 +319,13 @@ public class IdealPoint extends AbstractVotePredictor {
         }
         try {
             BufferedWriter writer = IOUtils.getBufferedWriter(modelFile);
+            // authors
+            writer.write(A + "\n");
             for (int aa = 0; aa < A; aa++) {
                 writer.write(u[aa] + "\n");
             }
+            // bills
+            writer.write(B + "\n");
             for (int bb = 0; bb < B; bb++) {
                 writer.write(x[bb] + "\t" + y[bb] + "\n");
             }
@@ -338,14 +342,17 @@ public class IdealPoint extends AbstractVotePredictor {
             logln("Inputing model from " + modelFile);
         }
         try {
-            this.u = new double[A];
-            this.x = new double[B];
-            this.y = new double[B];
-
             BufferedReader reader = IOUtils.getBufferedReader(modelFile);
+            // authors
+            A = Integer.parseInt(reader.readLine());
+            this.u = new double[A];
             for (int aa = 0; aa < A; aa++) {
                 u[aa] = Double.parseDouble(reader.readLine());
             }
+            // bills
+            B = Integer.parseInt(reader.readLine());
+            this.x = new double[B];
+            this.y = new double[B];
             for (int bb = 0; bb < B; bb++) {
                 String[] sline = reader.readLine().split("\t");
                 x[bb] = Double.parseDouble(sline[0]);

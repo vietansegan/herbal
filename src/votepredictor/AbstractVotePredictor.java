@@ -2,9 +2,14 @@ package votepredictor;
 
 import core.AbstractModel;
 import data.Vote;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
+import util.IOUtils;
 import util.SparseVector;
 import util.evaluation.Measurement;
 import util.evaluation.RankingEvaluation;
@@ -17,6 +22,70 @@ public abstract class AbstractVotePredictor extends AbstractModel {
 
     public AbstractVotePredictor(String name) {
         super(name);
+    }
+
+    /**
+     * Output the predicted scores for each test vote.
+     *
+     * @param predFile Output file
+     * @param votes True votes (optional)
+     * @param predictions Each sparse vector corresponds to a voter. The key of
+     * the sparse vector is the vote index and the value is the predicted
+     * probability that the corresponding vote is 1.
+     */
+    public static void outputPredictions(File predFile, int[][] votes,
+            SparseVector[] predictions) {
+        try {
+            BufferedWriter writer = IOUtils.getBufferedWriter(predFile);
+            writer.write(predictions.length + "\n");
+            for (int aa = 0; aa < predictions.length; aa++) {
+                if (predictions[aa] == null || predictions[aa].isEmpty()) {
+                    continue;
+                }
+                writer.write(Integer.toString(aa));
+                for (int key : predictions[aa].getIndices()) {
+                    writer.write("\t" + key
+                            + ":" + predictions[aa].get(key));
+                    if (votes != null) {
+                        writer.write(":" + votes[aa][key]);
+                    }
+                }
+                writer.write("\n");
+            }
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while outputing predictions to "
+                    + predFile);
+        }
+    }
+
+    public static SparseVector[] inputPredictions(File predFile) {
+        SparseVector[] predictions = null;
+        try {
+            BufferedReader reader = IOUtils.getBufferedReader(predFile);
+            int numPreds = Integer.parseInt(reader.readLine());
+            predictions = new SparseVector[numPreds];
+            for (int ii = 0; ii < numPreds; ii++) {
+                predictions[ii] = new SparseVector();
+            }
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] sline = line.split("\t");
+                int aa = Integer.parseInt(sline[0]);
+                for (int jj = 1; jj < sline.length; jj++) {
+                    int key = Integer.parseInt(sline[jj].split(":")[0]);
+                    double pred = Double.parseDouble(sline[jj].split(":")[1]);
+                    predictions[aa].set(key, pred);
+                }
+            }
+            reader.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while inputing predictions from "
+                    + predFile);
+        }
+        return predictions;
     }
 
     /**
@@ -79,7 +148,7 @@ public abstract class AbstractVotePredictor extends AbstractModel {
         RankingEvaluation withRankPerf = new RankingEvaluation(scores, withIndices);
         withRankPerf.computeAUCs();
         withRankPerf.computePRF();
-        for(Measurement m : withRankPerf.getMeasurements()) {
+        for (Measurement m : withRankPerf.getMeasurements()) {
             measurements.add(m);
         }
         return measurements;
