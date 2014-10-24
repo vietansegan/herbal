@@ -40,7 +40,7 @@ public class IdealPoint extends AbstractVotePredictor {
     protected ArrayList<String> voteVocab;
     protected int posAnchor;
     protected int negAnchor;
-    protected final double anchorMean = 5.0;
+    protected final double anchorMean = 3.0;
     protected final double anchorVar = 0.01;
 
     public IdealPoint(String name) {

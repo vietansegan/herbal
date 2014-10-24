@@ -35,6 +35,7 @@ public abstract class AbstractVotePredictor extends AbstractModel {
      */
     public static void outputPredictions(File predFile, int[][] votes,
             SparseVector[] predictions) {
+        System.out.println("Outputing predictions to " + predFile);
         try {
             BufferedWriter writer = IOUtils.getBufferedWriter(predFile);
             writer.write(predictions.length + "\n");

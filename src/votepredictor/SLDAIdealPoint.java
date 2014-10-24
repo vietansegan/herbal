@@ -195,7 +195,7 @@ public class SLDAIdealPoint extends AbstractSampler {
     public String getCurrentState() {
         StringBuilder str = new StringBuilder();
         str.append(this.getSamplerFolderPath())
-                .append("\n").append(Thread.currentThread().getId());
+                .append("\nCurrent thread: ").append(Thread.currentThread().getId());
         return str.toString();
     }
 
@@ -555,7 +555,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         if (verbose) {
             logln("Initializing ...");
         }
-        initializeModelStructure();
+        initializeModelStructure(null);
         initializeDataStructure();
         initializeUXY();
         initializeAssignments();
@@ -571,10 +571,45 @@ public class SLDAIdealPoint extends AbstractSampler {
         }
     }
 
-    protected void initializeModelStructure() {
+    public void initialize(double[][] seededTopics) {
+        if (verbose) {
+            logln("Initializing ...");
+        }
+        initializeModelStructure(seededTopics);
+        initializeDataStructure();
+        initializeUXY();
+        initializeAssignments();
+        updateEtas();
+
+        if (debug) {
+            validate("Initialized");
+        }
+
+        if (verbose) {
+            logln("--- Done initializing. \n" + getCurrentState());
+            getLogLikelihood();
+        }
+    }
+
+    protected void initializeModelStructure(double[][] seededTopics) {
+        if (seededTopics != null && seededTopics.length != K) {
+            throw new RuntimeException("Mismatch" + ". K = " + K
+                    + ". # prior topics = " + seededTopics.length);
+        }
+
         topicWords = new DirMult[K];
         for (int k = 0; k < K; k++) {
-            topicWords[k] = new DirMult(V, hyperparams.get(BETA) * V, 1.0 / V);
+            if (seededTopics != null) {
+                for (int kk = 0; kk < K; kk++) {
+                    for (int vv = 0; vv < V; vv++) {
+                        seededTopics[kk][vv] += (seededTopics[kk][vv] + 1.0 / V) / 2;
+                    }
+                }
+
+                topicWords[k] = new DirMult(V, hyperparams.get(BETA) * V, seededTopics[k]);
+            } else {
+                topicWords[k] = new DirMult(V, hyperparams.get(BETA) * V, 1.0 / V);
+            }
         }
 
         eta = new double[K];
@@ -645,13 +680,15 @@ public class SLDAIdealPoint extends AbstractSampler {
             logln("--- Initializing random assignments ...");
         }
 
-        for (int d = 0; d < D; d++) {
-            for (int n = 0; n < words[d].length; n++) {
-                z[d][n] = rand.nextInt(K);
-                docTopics[d].increment(z[d][n]);
-                topicWords[z[d][n]].increment(words[d][n]);
-            }
-        }
+        sampleZs(!REMOVE, ADD, !REMOVE, ADD, !OBSERVED);
+
+//        for (int d = 0; d < D; d++) {
+//            for (int n = 0; n < words[d].length; n++) {
+//                z[d][n] = rand.nextInt(K);
+//                docTopics[d].increment(z[d][n]);
+//                topicWords[z[d][n]].increment(words[d][n]);
+//            }
+//        }
     }
 
     @Override
@@ -772,7 +809,6 @@ public class SLDAIdealPoint extends AbstractSampler {
             boolean removeFromData, boolean addToData,
             boolean observe) {
         long sTime = System.currentTimeMillis();
-        double totalBeta = V * hyperparams.get(BETA);
         for (int d = 0; d < D; d++) {
             for (int n = 0; n < words[d].length; n++) {
                 if (removeFromModel) {
@@ -789,8 +825,7 @@ public class SLDAIdealPoint extends AbstractSampler {
                 for (int k = 0; k < K; k++) {
                     logprobs[k]
                             = Math.log(docTopics[d].getCount(k) + hyperparams.get(ALPHA))
-                            + Math.log((topicWords[k].getCount(words[d][n]) + hyperparams.get(BETA))
-                                    / (topicWords[k].getCountSum() + totalBeta));
+                            + Math.log(topicWords[k].getProbability(words[d][n]));
                     if (observe) {
                         double aMean = authorMeans[authors[d]] + eta[k] / authorTokenCounts[authors[d]];
                         double resLLh = StatUtils.logNormalProbability(u[authors[d]], aMean, Math.sqrt(rho));
@@ -798,6 +833,16 @@ public class SLDAIdealPoint extends AbstractSampler {
                     }
                 }
                 int sampledZ = SamplerUtils.logMaxRescaleSample(logprobs);
+                if (sampledZ == K) {
+                    logln("iter = " + iter + ". d = " + d + ". n = " + n);
+                    for (int kk = 0; kk < K; kk++) {
+                        logln("k = " + kk
+                                + ". " + (Math.log(docTopics[d].getCount(kk) + hyperparams.get(ALPHA)))
+                                + ". " + (Math.log(topicWords[kk].getProbability(words[d][n]))));
+                    }
+                    throw new RuntimeException("Out-of-bound sample. "
+                            + "SampledZ = " + sampledZ);
+                }
 
                 if (z[d][n] != sampledZ) {
                     numTokensChanged++; // for debugging
@@ -1123,6 +1168,10 @@ public class SLDAIdealPoint extends AbstractSampler {
     }
 
     public void outputTopicTopWords(File file, int numTopWords) {
+        this.outputTopicTopWords(file, numTopWords, null);
+    }
+
+    public void outputTopicTopWords(File file, int numTopWords, ArrayList<String> topicLabels) {
         if (this.wordVocab == null) {
             throw new RuntimeException("The word vocab has not been assigned yet");
         }
@@ -1141,9 +1190,14 @@ public class SLDAIdealPoint extends AbstractSampler {
             BufferedWriter writer = IOUtils.getBufferedWriter(file);
             for (int ii = 0; ii < K; ii++) {
                 int k = sortedTopics.get(ii).getObject();
+                String topicLabel = "Topic " + k;
+                if (topicLabels != null) {
+                    topicLabel = topicLabels.get(k);
+                }
+
                 double[] distrs = topicWords[k].getDistribution();
                 String[] topWords = getTopWords(distrs, numTopWords);
-                writer.write("[" + k
+                writer.write("[" + topicLabel
                         + ", " + topicWords[k].getCountSum()
                         + ", " + MiscUtils.formatDouble(eta[k])
                         + "]");
@@ -1156,6 +1210,20 @@ public class SLDAIdealPoint extends AbstractSampler {
         } catch (IOException e) {
             e.printStackTrace();
             throw new RuntimeException("Exception while outputing topic words");
+        }
+    }
+    
+    public void getAuthorTopicProportions() {
+        SparseVector[] designMatrix = new SparseVector[A];
+        for (int aa = 0; aa < A; aa++) {
+            designMatrix[aa] = new SparseVector(K);
+            for (int dd : authorDocIndices[aa]) {
+                for (int kk : docTopics[dd].getSparseCounts().getIndices()) {
+                    double val = (double) docTopics[dd].getSparseCounts().getCount(kk)
+                            / authorTokenCounts[aa];
+                    designMatrix[aa].change(kk, val);
+                }
+            }
         }
     }
 
