@@ -3,6 +3,7 @@ package votepredictor;
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import core.AbstractSampler;
 import data.Author;
+import data.Vote;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -79,6 +80,8 @@ public class SNLDAIdealPoint extends AbstractSampler {
     protected ArrayList<String> authorVocab;
     protected ArrayList<String> voteVocab;
     protected ArrayList<String> labelVocab;
+    protected int posAnchor;
+    protected int negAnchor;
 
     public SNLDAIdealPoint() {
         this.basename = "SNLDA-ideal-point";
@@ -419,6 +422,67 @@ public class SNLDAIdealPoint extends AbstractSampler {
         }
         return predictions;
     }
+    
+    public SparseVector[] test(File stateFile,
+            ArrayList<Integer> docIndices,
+            int[][] words,
+            int[] authors,
+            ArrayList<Integer> authorIndices,
+            boolean[][] testVotes,
+            File predictionFile) {
+        if (authorIndices == null) {
+            throw new RuntimeException("List of test authors is null");
+        }
+
+        if (stateFile == null) {
+            stateFile = getFinalStateFile();
+        }
+        
+        if (verbose) {
+            logln("Setting up test ...");
+            logln("--- state file: " + stateFile);
+            logln("--- # test documents: " + docIndices.size());
+            logln("--- # test authors: " + authorIndices.size());
+        }
+        
+        return null;
+    }
+    
+    private void sampleNewDocuments(
+            File stateFile,
+            File docTopicFile,
+            int[][] testWords,
+            ArrayList<Integer> testDocIndices) {
+        if (verbose) {
+            System.out.println();
+            logln("Perform regression using model from " + stateFile);
+            logln("--- Test burn-in: " + this.testBurnIn);
+            logln("--- Test max-iter: " + this.testMaxIter);
+            logln("--- Test sample-lag: " + this.testSampleLag);
+        }
+
+        // input model
+        inputModel(stateFile.getAbsolutePath());
+        
+        // set up test data
+        this.docIndices = testDocIndices;
+        if (this.docIndices == null) { // add all documents
+            this.docIndices = new ArrayList<>();
+            for (int dd = 0; dd < testWords.length; dd++) {
+                this.docIndices.add(dd);
+            }
+        }
+        this.numTokens = 0;
+        this.D = this.docIndices.size();
+        this.words = new int[D][];
+        for (int ii = 0; ii < D; ii++) {
+            int dd = this.docIndices.get(ii);
+            this.words[ii] = testWords[dd];
+            this.numTokens += this.words[ii].length;
+        }
+        
+        // TODO
+    }
 
     @Override
     public void initialize() {
@@ -541,31 +605,48 @@ public class SNLDAIdealPoint extends AbstractSampler {
 
     protected void initializeUXY() {
         if (verbose) {
-            logln("--- Initializing UXY using Bayesian ideal point ...");
+            logln("--- Initializing random UXY using anchored legislators ...");
         }
-        BayesianIdealPoint bip = new BayesianIdealPoint("bayesian-ideal-point");
-        bip.configure(1.0, 0.01, 10000);
+        double anchorMean = 3.0;
+        double anchorVar = 0.01;
+        ArrayList<RankingItem<Integer>> rankAuthors = new ArrayList<>();
+        for (int aa = 0; aa < A; aa++) {
+            int withCount = 0;
+            int againstCount = 0;
+            for (int bb = 0; bb < B; bb++) {
+                if (trainVotes[aa][bb]) {
+                    if (votes[aa][bb] == Vote.WITH) {
+                        withCount++;
+                    } else if (votes[aa][bb] == Vote.AGAINST) {
+                        againstCount++;
+                    }
+                }
+            }
+            double val = (double) withCount / (againstCount + withCount);
+            rankAuthors.add(new RankingItem<Integer>(aa, val));
+        }
+        Collections.sort(rankAuthors);
+        posAnchor = rankAuthors.get(0).getObject();
+        negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
 
-        File ipFolder = new File(folder, bip.getName());
-        File ipFile = new File(ipFolder, this.basename + ".init");
-        if (ipFile.exists()) {
-            if (verbose) {
-                logln("--- --- File exists. Loading from " + ipFile);
+        this.u = new double[A];
+        for (int ii = 0; ii < A; ii++) {
+            int aa = rankAuthors.get(ii).getObject();
+            if (ii < A / 4) {
+                this.u[aa] = SamplerUtils.getGaussian(anchorMean, anchorVar);
+            } else if (ii > 3 * A / 4) {
+                this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
+            } else {
+                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
             }
-            bip.input(ipFile);
-        } else {
-            if (verbose) {
-                logln("--- --- File not exists. " + ipFile);
-                logln("--- --- Running ideal point model ...");
-            }
-            bip.setTrain(votes, null, null, trainVotes);
-            bip.train();
-            IOUtils.createFolder(ipFolder);
-            bip.output(ipFile);
         }
-        u = bip.getUs();
-        x = bip.getXs();
-        y = bip.getYs();
+
+        this.x = new double[B];
+        this.y = new double[B];
+        for (int b = 0; b < B; b++) {
+            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
+            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
+        }
     }
 
     @Override
@@ -615,6 +696,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
             long uxyTime = updateUXY();
 
             if (isReporting) {
+                logln("\n" + printGlobalTree() + "\n");
                 logln("--- --- Time. Topic: " + topicTime
                         + ". Eta: " + etaTime
                         + ". UXY: " + uxyTime);
@@ -623,7 +705,10 @@ public class SNLDAIdealPoint extends AbstractSampler {
                         + " (" + (double) numTokensChanged / numTokens + ")"
                         + ". # tokens accepted: " + numTokensAccepted
                         + " (" + (double) numTokensAccepted / numTokens + ")");
-                logln("\n" + printGlobalTree() + "\n\n");
+                logln("--- --- positive anchor (" + posAnchor + "): "
+                        + MiscUtils.formatDouble(u[posAnchor])
+                        + ". negative anchor (" + negAnchor + "): "
+                        + MiscUtils.formatDouble(u[negAnchor]));
             }
 
             if (debug) {
@@ -632,16 +717,14 @@ public class SNLDAIdealPoint extends AbstractSampler {
 
             // store model
             if (report && iter > BURN_IN && iter % LAG == 0) {
-                outputState(new File(reportFolderPath, "iter-" + iter + ".zip"));
-                outputTopicTopWords(new File(reportFolderPath,
-                        "iter-" + iter + "-" + TopWordFile), 15);
+                outputState(new File(reportFolderPath, getIteratedStateFile()));
+                outputTopicTopWords(new File(reportFolderPath, getIteratedTopicFile()), 15);
             }
         }
 
         if (report) { // output the final model
-            outputState(new File(reportFolderPath, "iter-" + iter + ".zip"));
-            outputTopicTopWords(new File(reportFolderPath,
-                    "iter-" + iter + "-" + TopWordFile), 15);
+            outputState(new File(reportFolderPath, getIteratedStateFile()));
+            outputTopicTopWords(new File(reportFolderPath, getIteratedTopicFile()), 15);
         }
 
         float ellapsedSeconds = (System.currentTimeMillis() - startTime) / (1000);
@@ -846,6 +929,14 @@ public class SNLDAIdealPoint extends AbstractSampler {
         return lps;
     }
 
+    /**
+     * Compute the log likelihood of an author's response variable given that a
+     * token from the author is assigned to a given node.
+     *
+     * @param author The author
+     * @param node The node
+     * @return
+     */
     private double getResponseLogLikelihood(int author, Node node) {
         double aMean = authorMeans[author] + node.eta / authorTokenCounts[author];
         double resLLh = StatUtils.logNormalProbability(u[author], aMean, Math.sqrt(rho));

@@ -1,6 +1,5 @@
 package experiment.percongress;
 
-import data.AuthorVoteTextDataset;
 import data.Congress;
 import data.TextDataset;
 import data.Vote;
@@ -24,23 +23,10 @@ import util.IOUtils;
 public class HeldoutVotePredExpt extends VotePredExpt {
 
     @Override
-    public void preprocess() {
-        if (verbose) {
-            logln("Preprocessing ...");
-        }
-        try {
-            outputCrossValidatedVotes();
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException("Exception while preprocessing");
-        }
-    }
-
-    @Override
     public String getConfiguredExptFolder() {
-        return "heldout-vote-cv-" + numFolds + "-" + trToDevRatio;
+        return "heldout-vote-cv-" + numFolds + "-" + teRatio + "-" + trToDevRatio;
     }
-
+    
     @Override
     public void run() {
         if (verbose) {
@@ -54,20 +40,12 @@ public class HeldoutVotePredExpt extends VotePredExpt {
             }
         }
 
-        this.setupSampling();
+        loadFormattedData();
 
-        if (verbose) {
-            logln("--- Loading data from " + processedDataFolder);
-        }
-        debateVoteData = new AuthorVoteTextDataset(congressNum, processedDataFolder);
-        debateVoteData.loadFormattedData(processedDataFolder);
-        votes = debateVoteData.getVotes();
+        setupSampling();
+
         File configureFolder = new File(new File(experimentPath, congressNum),
                 getConfiguredExptFolder());
-
-        if (verbose) {
-            logln("--- Data loaded.");
-        }
 
         for (int ff = 0; ff < numFolds; ff++) {
             if (!runningFolds.isEmpty() && !runningFolds.contains(ff)) {
@@ -86,22 +64,37 @@ public class HeldoutVotePredExpt extends VotePredExpt {
         }
         evaluate();
     }
+    
+    @Override
+    public void preprocess() {
+        if (verbose) {
+            logln("Preprocessing ...");
+        }
+        try {
+            loadFormattedData();
+            outputCrossValidatedVotes();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while preprocessing");
+        }
+    }
 
     /**
      * Create and output cross-validated data.
      *
      * @throws java.lang.Exception
      */
-    protected void outputCrossValidatedVotes() throws Exception {
-        debateVoteData.loadFormattedData(processedDataFolder);
-        votes = debateVoteData.getVotes();
-
+    private void outputCrossValidatedVotes() throws Exception {
         File cvFolder = new File(processedDataFolder, getConfiguredExptFolder());
         IOUtils.createFolder(cvFolder);
 
+        if (verbose) {
+            logln("--- Outputing cross-validated data to " + cvFolder);
+        }
+
         Random rand = new Random(1);
         double[] probs = new double[2];
-        probs[0] = 1.0 / numFolds; // for test
+        probs[0] = teRatio; // for test
         probs[1] = probs[0] + (1.0 - probs[0]) * trToDevRatio;
         for (int ff = 0; ff < numFolds; ff++) {
             BufferedWriter writer = IOUtils.getBufferedWriter(new File(cvFolder,

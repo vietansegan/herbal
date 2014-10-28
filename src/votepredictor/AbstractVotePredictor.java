@@ -20,6 +20,9 @@ import util.evaluation.RankingEvaluation;
  */
 public abstract class AbstractVotePredictor extends AbstractModel {
 
+    public AbstractVotePredictor() {
+    }
+
     public AbstractVotePredictor(String name) {
         super(name);
     }
@@ -105,6 +108,9 @@ public abstract class AbstractVotePredictor extends AbstractModel {
 
         double llh = 0.0;
         int count = 0;
+        int posCount = 0;
+        int negCount = 0;
+        int correctCount = 0;
         Set<String> withVotes = new HashSet<>();
         ArrayList<String> voteList = new ArrayList<>();
         ArrayList<Double> voteScores = new ArrayList<>();
@@ -121,8 +127,16 @@ public abstract class AbstractVotePredictor extends AbstractModel {
                 if (votes[aa][vv] == Vote.WITH) {
                     withVotes.add(key);
                     llh += Math.log(val);
+                    if (val >= 0.5) {
+                        correctCount++;
+                    }
+                    posCount++;
                 } else if (votes[aa][vv] == Vote.AGAINST) {
                     llh += Math.log(1.0 - val);
+                    if (val < 0.5) {
+                        correctCount++;
+                    }
+                    negCount++;
                 } else {
                     throw new RuntimeException("Missing data");
                 }
@@ -132,8 +146,11 @@ public abstract class AbstractVotePredictor extends AbstractModel {
 
         // compute log likelihood of test data
         measurements.add(new Measurement("count", count));
+        measurements.add(new Measurement("positive count", posCount));
+        measurements.add(new Measurement("negative count", negCount));
         measurements.add(new Measurement("loglikelihood", llh));
         measurements.add(new Measurement("avg-loglikelihood", llh / count));
+        measurements.add(new Measurement("accuracy", (double) correctCount / count));
 
         // compute ranking performances
         double[] scores = new double[voteScores.size()];
@@ -148,7 +165,7 @@ public abstract class AbstractVotePredictor extends AbstractModel {
         }
         RankingEvaluation withRankPerf = new RankingEvaluation(scores, withIndices);
         withRankPerf.computeAUCs();
-        withRankPerf.computePRF();
+//        withRankPerf.computePRF();
         for (Measurement m : withRankPerf.getMeasurements()) {
             measurements.add(m);
         }

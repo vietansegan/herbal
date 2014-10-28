@@ -16,6 +16,10 @@ public class BayesianIdealPoint extends IdealPoint {
     protected double mean;
     protected double var;
 
+    public BayesianIdealPoint() {
+        this.name = "bayesian-ideal-point";
+    }
+
     public BayesianIdealPoint(String name) {
         super(name);
     }
@@ -95,11 +99,17 @@ public class BayesianIdealPoint extends IdealPoint {
             if (verbose && iter % stepSize == 0) {
                 double avgLlh = getLogLikelihood();
                 logln("--- Iter " + iter + " / " + maxIter
-                        + "\tllh = " + MiscUtils.formatDouble(avgLlh)
-                        + ". positive anchor (" + posAnchor + "): "
+                        + "\tllh = " + avgLlh
+                        + ". +ive anchor (" + posAnchor + "): "
                         + MiscUtils.formatDouble(u[posAnchor])
-                        + ". negative anchor (" + negAnchor + "): "
-                        + MiscUtils.formatDouble(u[negAnchor]));
+                        + ". -ive anchor (" + negAnchor + "): "
+                        + MiscUtils.formatDouble(u[negAnchor])
+                        + ". A-rate: " + getLearningRate()
+                        + ". B-rate: " + getLearningRate());
+                if (Double.isNaN(avgLlh) || Double.isInfinite(avgLlh)) {
+                    logln("Terminating ...");
+                    return;
+                }
             }
             updateUs();
             updateXYs();
@@ -108,7 +118,7 @@ public class BayesianIdealPoint extends IdealPoint {
 
     @Override
     protected void updateUs() {
-        double aRate = getLearningRate(A);
+        double aRate = getLearningRate();
         for (int a = 0; a < A; a++) {
             double grad = 0.0;
             // likelihood
@@ -128,7 +138,7 @@ public class BayesianIdealPoint extends IdealPoint {
 
     @Override
     protected void updateXYs() {
-        double bRate = getLearningRate(B);
+        double bRate = getLearningRate();
         for (int b = 0; b < B; b++) {
             double gradX = 0.0;
             double gradY = 0.0;

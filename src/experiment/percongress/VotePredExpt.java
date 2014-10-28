@@ -65,6 +65,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
     protected String processedDataFolder;
     protected int numFolds;
     protected double trToDevRatio;
+    protected double teRatio;
     public static HashMap<String, int[]> congressYearMap;
     protected HashMap<String, Vote> keyvotes;
     protected HashMap<Integer, HashMap<String, FWVote>> voteMap;
@@ -109,8 +110,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         numTopWords = CLIUtils.getIntegerArgument(cmd, "num-top-words", 20);
         numFolds = CLIUtils.getIntegerArgument(cmd, "num-folds", 5);
         trToDevRatio = CLIUtils.getDoubleArgument(cmd, "tr2dev-ratio", 1.0);
-        processedDataFolder = cmd.getOptionValue("processed-data-folder");
+        teRatio = CLIUtils.getDoubleArgument(cmd, "te-ratio", 0.2);
 
+        processedDataFolder = cmd.getOptionValue("processed-data-folder");
         experimentPath = CLIUtils.getStringArgument(cmd, "expt-folder", "vote-experiments");
         modelFolder = CLIUtils.getStringArgument(cmd, "model-folder", "model");
     }
@@ -333,11 +335,13 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         for (String vid : keyvotes.keySet()) {
             setVotePropertyValues(debateVoteData, vid);
         }
+        debateVoteData.setHasSentences(true);
         debateVoteData.format(processedDataFolder);
 
         // process bill data
         billData = data.getBillData();
         billData.setCorpusProcessor(debateVoteData.getCorpusProcessor());
+        billData.setHasSentences(true);
         billData.format(processedDataFolder);
     }
 
@@ -354,7 +358,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         GTLegislator leg = data.getLegislator(lid);
         phaseData.setAuthorProperty(lid, GTLegislator.ICPSRID, leg.getProperty(GTLegislator.ICPSRID));
         phaseData.setAuthorProperty(lid, GTLegislator.NAME, leg.getName());
-        phaseData.setAuthorProperty(lid, "party", leg.getParty());
+        phaseData.setAuthorProperty(lid, GTLegislator.PARTY, leg.getParty());
         phaseData.setAuthorProperty(lid, "type", leg.getType());
         phaseData.setAuthorProperty(lid, GTLegislator.FW_ID, leg.getProperty(GTLegislator.FW_ID));
         phaseData.setAuthorProperty(lid, GTLegislator.NOMINATE_SCORE1,
@@ -405,11 +409,11 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             }
         }
 
-        File estimateFolder = new File(new File(experimentPath, congressNum),
+        File configureFolder = new File(new File(experimentPath, congressNum),
                 getConfiguredExptFolder());
-        IOUtils.createFolder(estimateFolder);
+        IOUtils.createFolder(configureFolder);
 
-        this.runModel(estimateFolder);
+        this.runModel(configureFolder);
     }
 
     /**
@@ -423,8 +427,11 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             case "random":
                 runRandom(outputFolder);
                 break;
-            case "lda":
-                runLDA(outputFolder);
+            case "lda-bill":
+                runLDABills(outputFolder);
+                break;
+            case "lda-debate":
+                runLDADebates(outputFolder);
                 break;
             case "ideal-point":
                 runIdealPoint(outputFolder);
@@ -462,54 +469,102 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             logln("--- Summarizing author scores ...");
         }
         MinMaxNormalizer mmNorm;
+        int A = this.trainAuthorIndices.size();
+        Author[] authors = new Author[A];
+        ArrayList<String> headers = new ArrayList<>();
 
-        ArrayList<String> authorVocab = debateVoteData.getAuthorVocab();
-        int A = authorVocab.size();
+        // basic info
+        headers.add(GTLegislator.FW_ID);
+        headers.add(GTLegislator.NAME);
+        headers.add(GTLegislator.PARTY);
+        headers.add("NumWithVotes");
+        headers.add("NumAgainstVotes");
+        headers.add("FWScore");
+        for (int ii = 0; ii < A; ii++) {
+            int aa = this.trainAuthorIndices.get(ii);
+            String authorId = debateVoteData.getAuthorVocab().get(aa);
+            authors[ii] = new Author(authorId);
+            authors[ii].addProperty(GTLegislator.FW_ID, debateVoteData.getAuthorProperty(authorId, GTLegislator.FW_ID));
+            authors[ii].addProperty(GTLegislator.NAME, debateVoteData.getAuthorProperty(authorId, GTLegislator.NAME));
+            authors[ii].addProperty(GTLegislator.PARTY, debateVoteData.getAuthorProperty(authorId, GTLegislator.PARTY));
 
-        ArrayList<String> models = new ArrayList<>();
-        ArrayList<double[]> authorEstimates = new ArrayList<>();
-
-        // average
-        models.add("average");
-        double[] avgEsts = new double[A];
-        for (int aa = 0; aa < A; aa++) {
             int withCount = 0;
-            int totalCount = 0;
+            int againstCount = 0;
             for (int bb = 0; bb < votes[aa].length; bb++) {
                 if (trainVotes[aa][bb]) {
-                    totalCount++;
                     if (votes[aa][bb] == Vote.WITH) {
                         withCount++;
+                    } else if (votes[aa][bb] == Vote.AGAINST) {
+                        againstCount++;
                     }
                 }
             }
-            avgEsts[aa] = (double) withCount / totalCount;
+            double ratio = (double) withCount / (withCount + againstCount);
+            authors[ii].addProperty("NumWithVotes", Integer.toString(withCount));
+            authors[ii].addProperty("NumAgainstVotes", Integer.toString(againstCount));
+            authors[ii].addProperty("FWScore", Double.toString(ratio));
         }
-        authorEstimates.add(avgEsts);
 
         // ideal point
         IdealPoint ip = new IdealPoint("ideal-point");
-        models.add(ip.getBasename());
         ip.configure(1, 0.01, 10000);
         ip.setAuthorVocab(debateVoteData.getAuthorVocab());
         ip.setVoteVocab(debateVoteData.getVoteVocab());
         File ipFolder = new File(estimateFolder, ip.getName());
         ip.input(new File(ipFolder, MODEL_FILE));
         mmNorm = new MinMaxNormalizer(ip.getUs(), 0.0, 1.0);
-        authorEstimates.add(mmNorm.normalize(ip.getUs()));
+        for (int ii = 0; ii < A; ii++) {
+            authors[ii].addProperty(ip.getBasename(), Double.toString(mmNorm.normalize(ip.getUs()[ii])));
+        }
+        headers.add(ip.getBasename());
 
         // bayesian ideal point
         BayesianIdealPoint bip = new BayesianIdealPoint("bayesian-ideal-point");
-        models.add(bip.getBasename());
         bip.configure(1, 0.01, 10000, 0, 2.5);
         bip.setAuthorVocab(debateVoteData.getAuthorVocab());
         bip.setVoteVocab(debateVoteData.getVoteVocab());
         File bipFolder = new File(estimateFolder, bip.getName());
         bip.input(new File(bipFolder, MODEL_FILE));
         mmNorm = new MinMaxNormalizer(bip.getUs(), 0.0, 1.0);
-        authorEstimates.add(mmNorm.normalize(bip.getUs()));
+        for (int ii = 0; ii < A; ii++) {
+            authors[ii].addProperty(bip.getBasename(), Double.toString(mmNorm.normalize(bip.getUs()[ii])));
+        }
+        headers.add(bip.getBasename());
 
         // Author-SLDA ideal point
+        SLDAIdealPoint sampler = new SLDAIdealPoint();
+        sampler.setWordVocab(debateVoteData.getWordVocab());
+        sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+        sampler.setVoteVocab(debateVoteData.getVoteVocab());
+        sampler.configure(estimateFolder.getAbsolutePath(),
+                debateVoteData.getWordVocab().size(), 20,
+                0.1, 0.1, 1.0, 0.0, 2.5, 1.0, 0.01,
+                initState, paramOpt,
+                10, 25, 3, 1);
+        sampler.train(trainDebateIndices,
+                debateVoteData.getWords(),
+                debateVoteData.getAuthors(),
+                votes,
+                trainAuthorIndices,
+                trainBillIndices,
+                trainVotes);
+        sampler.inputFinalState();
+        mmNorm = new MinMaxNormalizer(sampler.getUs(), 0.0, 1.0);
+
+        double[][] authorTopicProps = sampler.getAuthorTopicProportions();
+        for (String label : billData.getTopicVocab()) {
+            headers.add(label);
+        }
+
+        for (int ii = 0; ii < A; ii++) {
+            authors[ii].addProperty(sampler.getBasename(), Double.toString(mmNorm.normalize(sampler.getUs()[ii])));
+            for (int ll = 0; ll < billData.getTopicVocab().size(); ll++) {
+                String label = billData.getTopicVocab().get(ll);
+                authors[ii].addProperty(label, Double.toString(authorTopicProps[ii][ll]));
+            }
+        }
+        headers.add(sampler.getBasename());
+
         try {
             File authorEstimateFile = new File(estimateFolder, "authors.score");
             if (verbose) {
@@ -518,20 +573,17 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
             // header
             BufferedWriter writer = IOUtils.getBufferedWriter(authorEstimateFile);
-            writer.write("LegislatorID\tLegislatorName\tParty");
-            for (String model : models) {
-                writer.write("\t" + model);
+            writer.write("ID");
+            for (String prop : headers) {
+                writer.write("\t" + prop);
             }
             writer.write("\n");
 
-            // estimates
-            for (int aa = 0; aa < debateVoteData.getAuthorVocab().size(); aa++) {
-                String authorId = debateVoteData.getAuthorVocab().get(aa);
-                String authorName = debateVoteData.getAuthorProperty(authorId, "name");
-                String authorParty = debateVoteData.getAuthorProperty(authorId, "party");
-                writer.write(authorId + "\t" + authorName + "\t" + authorParty);
-                for (double[] est : authorEstimates) {
-                    writer.write("\t" + est[aa]);
+            // authors
+            for (Author author : authors) {
+                writer.write(author.getId());
+                for (String prop : headers) {
+                    writer.write("\t" + author.getProperty(prop));
                 }
                 writer.write("\n");
             }
@@ -559,7 +611,44 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
     }
 
-    protected void runLDA(File estimateFolder) {
+    protected void runLDADebates(File outputFolder) {
+        double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
+        double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
+        int V = debateVoteData.getWordVocab().size();
+
+        int K;
+        double[][] issuePhis;
+        if (cmd.hasOption("K")) {
+            issuePhis = null;
+            K = Integer.parseInt(cmd.getOptionValue("K"));
+        } else {
+            issuePhis = estimateIssues();
+            K = issuePhis.length;
+        }
+
+        LDA sampler = new LDA();
+        sampler.setVerbose(cmd.hasOption("v"));
+        sampler.setDebug(cmd.hasOption("d"));
+        sampler.setLog(true);
+        sampler.setReport(true);
+        sampler.setWordVocab(debateVoteData.getWordVocab());
+
+        sampler.configure(outputFolder.getAbsolutePath(), V, K,
+                alpha, beta,
+                initState, paramOpt,
+                burn_in, max_iters, sample_lag, report_interval);
+        File samplerFolder = new File(sampler.getSamplerFolderPath());
+        IOUtils.createFolder(samplerFolder);
+
+        if (cmd.hasOption("train")) {
+            sampler.train(debateVoteData.getWords(), null);
+            sampler.initialize(null, issuePhis);
+            sampler.iterate();
+            sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile), numTopWords);
+        }
+    }
+
+    protected void runLDABills(File estimateFolder) {
         Initializer init = new Initializer(billData.getWords(),
                 billData.getTopics(), debateVoteData.getWords(),
                 billData.getTopicVocab().size(), billData.getWordVocab().size());
@@ -622,14 +711,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         File samplerFolder = new File(sampler.getSamplerFolderPath());
         IOUtils.createFolder(samplerFolder);
 
-        // debug
-        ArrayList<Integer> docIndices = new ArrayList<>();
-        for (int ii = 0; ii < 2000; ii++) {
-            docIndices.add(ii);
-        }
-
         if (cmd.hasOption("train")) {
-            sampler.train(debateVoteData.getWords(), docIndices);
+            sampler.train(debateVoteData.getWords(), null);
             sampler.initialize(null, priors);
             sampler.iterate();
             sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile), numTopWords);
@@ -719,7 +802,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             try {
                 BufferedWriter writer = IOUtils.getBufferedWriter(new File(devFolder, "dev.txt"));
                 max_iters = 10000;
-                double[] alphas = {1.0, 5.0};
+                double[] alphas = {1.0};
                 double[] etas = {0.005, 0.01};
                 double[] sigmas = {1.0, 2.5, 5.0};
                 boolean header = true;
@@ -788,7 +871,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
         double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
         double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 10);
-        double epsilon = CLIUtils.getDoubleArgument(cmd, "epsilon", 0.01);
+        double rate_alpha = CLIUtils.getDoubleArgument(cmd, "rate-alpha", 1);
+        double rate_eta = CLIUtils.getDoubleArgument(cmd, "rate-eta", 0.01);
         double rho = CLIUtils.getDoubleArgument(cmd, "rho", 1.0);
 
         SLDAIdealPoint sampler = new SLDAIdealPoint();
@@ -802,7 +886,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), K,
-                alpha, beta, rho, mu, sigma, epsilon,
+                alpha, beta, rho, mu, sigma, rate_alpha, rate_eta,
                 initState, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
@@ -999,6 +1083,10 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     AbstractVotePredictor.evaluate(votes, testVotes, predictions));
         }
 
+        if (cmd.hasOption("testauthor")) {
+
+        }
+
         if (cmd.hasOption("visualize")) {
             sampler.train(trainDebateIndices,
                     debateVoteData.getWords(),
@@ -1103,6 +1191,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         if (verbose) {
             displayTopics(billData.getTopicVocab(), debateVoteData.getWordVocab(), priors);
         }
+
+        // to avoid 0.0 probabilities
+        for (double[] prior : priors) {
+            for (int vv = 0; vv < prior.length; vv++) {
+                prior[vv] = (prior[vv] + 1.0 / V) / 2;
+            }
+        }
+
         return priors;
     }
 
@@ -1293,6 +1389,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         addOption("processed-bill-data-folder", "Processed bill data folder");
 
         addOption("tr2dev-ratio", "Training-to-developmeng ratio");
+        addOption("te-ratio", "Test ratio");
 
         addOption("debate-file", "Debate formatted file name");
         addOption("bill-file", "Bill formatted file name");
@@ -1326,6 +1423,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         addOption("gamma-scales", "Gamma scales");
         addOption("global-alphas", "Global alphas");
         addOption("local-alphas", "Local alphas");
+        addOption("rate-alpha", "Alpha for learning rate");
+        addOption("rate-eta", "Eta for learning rate");
 
         // mode parameters
         addGreekParametersOptions();

@@ -42,6 +42,10 @@ public class IdealPoint extends AbstractVotePredictor {
     protected int negAnchor;
     protected final double anchorMean = 3.0;
     protected final double anchorVar = 0.01;
+    
+    public IdealPoint() {
+        this.name = "ideal-point";
+    }
 
     public IdealPoint(String name) {
         super(name);
@@ -93,8 +97,8 @@ public class IdealPoint extends AbstractVotePredictor {
         this.voteVocab = voteVoc;
     }
 
-    public double getLearningRate(int N) {
-        return eta * Math.pow(alpha, -(double) iter / N);
+    public double getLearningRate() {
+        return eta * Math.pow(alpha, -(double) iter / maxIter);
     }
 
     /**
@@ -204,7 +208,7 @@ public class IdealPoint extends AbstractVotePredictor {
     }
 
     protected void updateUs() {
-        double aRate = getLearningRate(A);
+        double aRate = getLearningRate();
         for (int a = 0; a < A; a++) {
             double grad = 0.0;
             for (int b = 0; b < votes[a].length; b++) {
@@ -219,7 +223,7 @@ public class IdealPoint extends AbstractVotePredictor {
     }
 
     protected void updateXYs() {
-        double bRate = getLearningRate(B);
+        double bRate = getLearningRate();
         for (int b = 0; b < B; b++) {
             double gradX = 0.0;
             double gradY = 0.0;

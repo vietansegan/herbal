@@ -3,6 +3,7 @@ package votepredictor;
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import cc.mallet.optimize.Optimizable;
 import core.AbstractSampler;
+import data.Vote;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -31,7 +32,8 @@ public class SLDAIdealPoint extends AbstractSampler {
     public double rho;
     public double mu;
     public double sigma;
-    public double epsilon; // learning rate when updating Xs and Ys
+    public double rate_alpha;
+    public double rate_eta;
     public int numSteps = 20; // number of iterations when updating Xs and Ys
 
     // input
@@ -65,6 +67,8 @@ public class SLDAIdealPoint extends AbstractSampler {
     protected int[] authorTokenCounts;  // [A]: store the total #tokens for each author
     protected ArrayList<String> authorVocab;
     protected ArrayList<String> voteVocab;
+    protected int posAnchor;
+    protected int negAnchor;
 
     public SLDAIdealPoint() {
         this.basename = "SLDA-ideal-point";
@@ -91,7 +95,8 @@ public class SLDAIdealPoint extends AbstractSampler {
                 sampler.rho,
                 sampler.mu,
                 sampler.sigma,
-                sampler.epsilon,
+                sampler.rate_alpha,
+                sampler.rate_eta,
                 sampler.initState,
                 sampler.paramOptimized,
                 sampler.BURN_IN,
@@ -108,7 +113,8 @@ public class SLDAIdealPoint extends AbstractSampler {
             double rho,
             double mu, // mean of Gaussian for regression parameters
             double sigma, // stadard deviation of Gaussian for regression parameters
-            double epsilon,
+            double rate_alpha,
+            double rate_eta,
             InitialState initState,
             boolean paramOpt,
             int burnin, int maxiter, int samplelag, int repInt) {
@@ -126,7 +132,8 @@ public class SLDAIdealPoint extends AbstractSampler {
         this.rho = rho;
         this.mu = mu;
         this.sigma = sigma;
-        this.epsilon = epsilon;
+        this.rate_alpha = rate_alpha;
+        this.rate_eta = rate_eta;
 
         this.sampledParams = new ArrayList<ArrayList<Double>>();
         this.sampledParams.add(cloneHyperparameters());
@@ -152,7 +159,8 @@ public class SLDAIdealPoint extends AbstractSampler {
             logln("--- rho:\t" + MiscUtils.formatDouble(rho));
             logln("--- reg mu:\t" + MiscUtils.formatDouble(mu));
             logln("--- reg sigma:\t" + MiscUtils.formatDouble(sigma));
-            logln("--- epsilon:\t" + MiscUtils.formatDouble(epsilon));
+            logln("--- rate-alpha:\t" + MiscUtils.formatDouble(rate_alpha));
+            logln("--- rate-eta:\t" + MiscUtils.formatDouble(rate_eta));
             logln("--- burn-in:\t" + BURN_IN);
             logln("--- max iter:\t" + MAX_ITER);
             logln("--- sample lag:\t" + LAG);
@@ -171,7 +179,8 @@ public class SLDAIdealPoint extends AbstractSampler {
                 .append("_K-").append(K)
                 .append("_a-").append(formatter.format(hyperparams.get(ALPHA)))
                 .append("_b-").append(formatter.format(hyperparams.get(BETA)))
-                .append("_e-").append(formatter.format(epsilon))
+                .append("_ra-").append(formatter.format(rate_alpha))
+                .append("_re-").append(formatter.format(rate_eta))
                 .append("_r-").append(formatter.format(rho))
                 .append("_m-").append(formatter.format(mu))
                 .append("_s-").append(formatter.format(sigma));
@@ -408,7 +417,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         SparseVector[] predictions = new SparseVector[testVotes.length];
         for (int aa = 0; aa < testA; aa++) {
             int author = authorIndices.get(aa);
-            predictions[author] = new SparseVector();
+            predictions[author] = new SparseVector(testVotes[author].length);
             double authorScore = predAuthorScores[aa];
             for (int bb = 0; bb < testVotes[author].length; bb++) {
                 if (testVotes[author][bb]) {
@@ -514,7 +523,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         }
     }
 
-    private void outputDocTopics(File file) {
+    protected void outputDocTopics(File file) {
         if (verbose) {
             logln("Outputing documents' topic distributions to " + file);
         }
@@ -531,7 +540,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         }
     }
 
-    private void inputDocTopics(File file) {
+    protected void inputDocTopics(File file) {
         if (verbose) {
             logln("Inputing documents' topic distributions from " + file);
         }
@@ -600,12 +609,6 @@ public class SLDAIdealPoint extends AbstractSampler {
         topicWords = new DirMult[K];
         for (int k = 0; k < K; k++) {
             if (seededTopics != null) {
-                for (int kk = 0; kk < K; kk++) {
-                    for (int vv = 0; vv < V; vv++) {
-                        seededTopics[kk][vv] += (seededTopics[kk][vv] + 1.0 / V) / 2;
-                    }
-                }
-
                 topicWords[k] = new DirMult(V, hyperparams.get(BETA) * V, seededTopics[k]);
             } else {
                 topicWords[k] = new DirMult(V, hyperparams.get(BETA) * V, 1.0 / V);
@@ -638,31 +641,48 @@ public class SLDAIdealPoint extends AbstractSampler {
 
     protected void initializeUXY() {
         if (verbose) {
-            logln("--- Initializing UXY using Bayesian ideal point ...");
+            logln("--- Initializing random UXY using anchored legislators ...");
         }
-        BayesianIdealPoint ip = new BayesianIdealPoint("bayesian-ideal-point");
-        ip.configure(1.0, 0.01, 10000);
+        double anchorMean = 3.0;
+        double anchorVar = 0.01;
+        ArrayList<RankingItem<Integer>> rankAuthors = new ArrayList<>();
+        for (int aa = 0; aa < A; aa++) {
+            int withCount = 0;
+            int againstCount = 0;
+            for (int bb = 0; bb < B; bb++) {
+                if (validVotes[aa][bb]) {
+                    if (votes[aa][bb] == Vote.WITH) {
+                        withCount++;
+                    } else if (votes[aa][bb] == Vote.AGAINST) {
+                        againstCount++;
+                    }
+                }
+            }
+            double val = (double) withCount / (againstCount + withCount);
+            rankAuthors.add(new RankingItem<Integer>(aa, val));
+        }
+        Collections.sort(rankAuthors);
+        posAnchor = rankAuthors.get(0).getObject();
+        negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
 
-        File ipFolder = new File(folder, ip.getName());
-        File ipFile = new File(ipFolder, this.basename + ".init");
-        if (ipFile.exists()) {
-            if (verbose) {
-                logln("--- --- File exists. Loading from " + ipFile);
+        this.u = new double[A];
+        for (int ii = 0; ii < A; ii++) {
+            int aa = rankAuthors.get(ii).getObject();
+            if (ii < A / 4) {
+                this.u[aa] = SamplerUtils.getGaussian(anchorMean, anchorVar);
+            } else if (ii > 3 * A / 4) {
+                this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
+            } else {
+                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
             }
-            ip.input(ipFile);
-        } else {
-            if (verbose) {
-                logln("--- --- File not exists. " + ipFile);
-                logln("--- --- Running ideal point model ...");
-            }
-            ip.setTrain(votes, null, null, validVotes);
-            ip.train();
-            IOUtils.createFolder(ipFolder);
-            ip.output(ipFile);
         }
-        u = ip.getUs();
-        x = ip.getXs();
-        y = ip.getYs();
+
+        this.x = new double[B];
+        this.y = new double[B];
+        for (int b = 0; b < B; b++) {
+            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
+            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
+        }
     }
 
     protected void initializeAssignments() {
@@ -681,14 +701,6 @@ public class SLDAIdealPoint extends AbstractSampler {
         }
 
         sampleZs(!REMOVE, ADD, !REMOVE, ADD, !OBSERVED);
-
-//        for (int d = 0; d < D; d++) {
-//            for (int n = 0; n < words[d].length; n++) {
-//                z[d][n] = rand.nextInt(K);
-//                docTopics[d].increment(z[d][n]);
-//                topicWords[z[d][n]].increment(words[d][n]);
-//            }
-//        }
     }
 
     @Override
@@ -729,6 +741,10 @@ public class SLDAIdealPoint extends AbstractSampler {
                 } else {
                     logln("--- Sampling. " + str);
                 }
+                logln("--- --- positive anchor (" + posAnchor + "): "
+                        + MiscUtils.formatDouble(u[posAnchor])
+                        + ". negative anchor (" + negAnchor + "): "
+                        + MiscUtils.formatDouble(u[negAnchor]));
             }
 
             // sample topic assignments
@@ -927,6 +943,7 @@ public class SLDAIdealPoint extends AbstractSampler {
     }
 
     private void updateUs() {
+        double aRate = getLearningRate();
         for (int a = 0; a < A; a++) {
             double grad = 0.0;
             for (int b = 0; b < votes[a].length; b++) { // likelihood
@@ -937,11 +954,12 @@ public class SLDAIdealPoint extends AbstractSampler {
                 }
             }
             grad -= (u[a] - authorMeans[a]) / sigma; // prior
-            u[a] += epsilon * grad; // update
+            u[a] += aRate * grad; // update
         }
     }
 
     public void updateXYs() {
+        double bRate = getLearningRate();
         for (int b = 0; b < B; b++) {
             double gradX = 0.0;
             double gradY = 0.0;
@@ -958,9 +976,13 @@ public class SLDAIdealPoint extends AbstractSampler {
             gradY -= (y[b] - mu) / sigma;
 
             // update
-            x[b] += epsilon * gradX;
-            y[b] += epsilon * gradY;
+            x[b] += bRate * gradX;
+            y[b] += bRate * gradY;
         }
+    }
+
+    public double getLearningRate() {
+        return rate_eta * Math.pow(rate_alpha, -(double) iter / MAX_ITER);
     }
 
     private double getVoteLogLikelihood() {
@@ -1212,8 +1234,8 @@ public class SLDAIdealPoint extends AbstractSampler {
             throw new RuntimeException("Exception while outputing topic words");
         }
     }
-    
-    public void getAuthorTopicProportions() {
+
+    public double[][] getAuthorTopicProportions() {
         SparseVector[] designMatrix = new SparseVector[A];
         for (int aa = 0; aa < A; aa++) {
             designMatrix[aa] = new SparseVector(K);
@@ -1225,6 +1247,12 @@ public class SLDAIdealPoint extends AbstractSampler {
                 }
             }
         }
+        double[][] authorTopicProps = new double[A][K];
+        for (int aa = 0; aa < A; aa++) {
+            designMatrix[aa].normalize();
+            authorTopicProps[aa] = designMatrix[aa].dense();
+        }
+        return authorTopicProps;
     }
 
     /**

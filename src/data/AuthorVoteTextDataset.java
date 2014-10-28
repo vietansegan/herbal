@@ -284,9 +284,11 @@ public class AuthorVoteTextDataset extends TextDataset {
         formatAuthors(outputFolder);
 
         outputDocumentInfo(outputFolder);
-        outputSentTextData(outputFolder);
         outputVoteVocab(outputFolder);
         outputAuthorVotes(outputFolder);
+        if (sent) {
+            outputSentTextData(outputFolder);
+        }
     }
 
     private void formatVoteText(String outputFolder) {
@@ -326,7 +328,7 @@ public class AuthorVoteTextDataset extends TextDataset {
         corpProc.setVocab(curWordVocab);
 
         // update indexed words
-        voteWords = corpProc.getNumerics();
+        voteWords = cp.getNumerics();
         for (int[] voteWord : voteWords) {
             for (int nn = 0; nn < voteWord.length; nn++) {
                 Integer mappedWord = mapping.get(voteWord[nn]);
