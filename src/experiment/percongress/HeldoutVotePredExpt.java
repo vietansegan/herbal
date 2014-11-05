@@ -26,7 +26,7 @@ public class HeldoutVotePredExpt extends VotePredExpt {
     public String getConfiguredExptFolder() {
         return "heldout-vote-cv-" + numFolds + "-" + teRatio + "-" + trToDevRatio;
     }
-    
+
     @Override
     public void run() {
         if (verbose) {
@@ -64,7 +64,7 @@ public class HeldoutVotePredExpt extends VotePredExpt {
         }
         evaluate();
     }
-    
+
     @Override
     public void preprocess() {
         if (verbose) {
@@ -191,6 +191,16 @@ public class HeldoutVotePredExpt extends VotePredExpt {
                 }
             }
             reader.close();
+
+            this.trainAuthorIndices = new ArrayList<>();
+            for (int aa = 0; aa < numAuthors; aa++) {
+                this.trainAuthorIndices.add(aa);
+            }
+
+            this.trainBillIndices = new ArrayList<>();
+            for (int bb = 0; bb < trainVotes[0].length; bb++) {
+                this.trainBillIndices.add(bb);
+            }
 
             if (verbose) {
                 logln("--- Fold " + ff + " loaded");

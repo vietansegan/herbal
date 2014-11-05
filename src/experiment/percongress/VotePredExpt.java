@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import labelestimator.TFEstimator;
 import org.apache.commons.cli.BasicParser;
 import org.apache.commons.cli.Options;
@@ -86,6 +88,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
     protected ArrayList<Integer> testDebateIndices;
     protected boolean[][] testVotes;
 
+    protected Set<String> keyvoteBills;
+
     public VotePredExpt() {
         congressYearMap = new HashMap<String, int[]>();
         congressYearMap.put("112", new int[]{2011, 2012});
@@ -96,6 +100,59 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
     public String getConfiguredExptFolder() {
         return "all";
+    }
+
+    protected void getKeyvoteBills() {
+        this.keyvoteBills = new HashSet<>();
+        for (String vote : debateVoteData.getVoteVocab()) {
+            String billId = convertBillId(debateVoteData.getVoteProperty(vote, "bill").split(";")[0]);
+            this.keyvoteBills.add(billId);
+        }
+    }
+
+    protected String convertBillId(String billId) {
+        if (billId.contains("H.R. ")) {
+            billId = billId.replace("H.R. ", "h-");
+        } else if (billId.contains("H.J.Res. ")) {
+            billId = billId.replace("H.J.Res. ", "hj-");
+        } else if (billId.contains("H.C.Res. ")) {
+            billId = billId.replace("H.C.Res. ", "hc-");
+        } else if (billId.contains("H.Res. ")) {
+            billId = billId.replace("H.Res. ", "hr-");
+        } else if (billId.contains("S. ")) {
+            billId = billId.replace("S. ", "s-");
+        } else if (billId.contains("S.C.Res. ")) {
+            billId = billId.replace("S.C.Res. ", "sc-");
+        } else {
+            throw new RuntimeException("BillID = " + billId);
+        }
+        return billId;
+    }
+
+    public void adhocProcess() {
+        if (verbose) {
+            logln("Ad hoc processing ...");
+        }
+
+        loadFormattedData();
+
+        File billIdFile = new File(processedDataFolder, congressNum + ".bills");
+        if (verbose) {
+            logln("--- Converting bill Ids to " + billIdFile);
+        }
+        try {
+            BufferedWriter writer = IOUtils.getBufferedWriter(billIdFile);
+            writer.write("ID\tBillID\n");
+            for (String vote : debateVoteData.getVoteVocab()) {
+                String oriBillId = debateVoteData.getVoteProperty(vote, "bill").split(";")[0];
+                writer.write(vote + "\t" + convertBillId(oriBillId) + "\n");
+            }
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while outputing to " + billIdFile);
+        }
+
     }
 
     @Override
@@ -327,6 +384,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         debateVoteData.setTextData(debate.getDocIdList(), debate.getTextList());
         debateVoteData.setVoteText(voteText);
         debateVoteData.setAuthorList(debate.getSpeakerList());
+        debateVoteData.setBillList(debate.getBillList());
         debateVoteData.setAuthorPropertyNames(legislatorProperties);
         debateVoteData.setVotePropertyNames(voteProperties);
         for (String author : authorVocab) {
@@ -484,9 +542,12 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             int aa = this.trainAuthorIndices.get(ii);
             String authorId = debateVoteData.getAuthorVocab().get(aa);
             authors[ii] = new Author(authorId);
-            authors[ii].addProperty(GTLegislator.FW_ID, debateVoteData.getAuthorProperty(authorId, GTLegislator.FW_ID));
-            authors[ii].addProperty(GTLegislator.NAME, debateVoteData.getAuthorProperty(authorId, GTLegislator.NAME));
-            authors[ii].addProperty(GTLegislator.PARTY, debateVoteData.getAuthorProperty(authorId, GTLegislator.PARTY));
+            authors[ii].addProperty(GTLegislator.FW_ID, debateVoteData.getAuthorProperty(
+                    authorId, GTLegislator.FW_ID));
+            authors[ii].addProperty(GTLegislator.NAME, debateVoteData.getAuthorProperty(
+                    authorId, GTLegislator.NAME));
+            authors[ii].addProperty(GTLegislator.PARTY, debateVoteData.getAuthorProperty(
+                    authorId, GTLegislator.PARTY));
 
             int withCount = 0;
             int againstCount = 0;
@@ -557,7 +618,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         for (int ii = 0; ii < A; ii++) {
-            authors[ii].addProperty(sampler.getBasename(), Double.toString(mmNorm.normalize(sampler.getUs()[ii])));
+            authors[ii].addProperty(sampler.getBasename(),
+                    Double.toString(mmNorm.normalize(sampler.getUs()[ii])));
             for (int ll = 0; ll < billData.getTopicVocab().size(); ll++) {
                 String label = billData.getTopicVocab().get(ll);
                 authors[ii].addProperty(label, Double.toString(authorTopicProps[ii][ll]));
@@ -736,7 +798,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             IOUtils.createFolder(predFolder);
             pred.output(new File(predFolder, MODEL_FILE));
             outputAuthorScore(new File(predFolder, AuthorScoreFile),
-                    debateVoteData.getAuthorVocab(), this.trainAuthorIndices,
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
                     pred.getUs(),
                     debateVoteData.getAuthorTable());
             outputVoteScores(new File(predFolder, VoteScoreFile),
@@ -775,11 +839,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             IOUtils.createFolder(predFolder);
             pred.output(new File(predFolder, MODEL_FILE));
             outputAuthorScore(new File(predFolder, AuthorScoreFile),
-                    debateVoteData.getAuthorVocab(), this.trainAuthorIndices,
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
                     pred.getUs(),
                     debateVoteData.getAuthorTable());
             outputVoteScores(new File(predFolder, VoteScoreFile),
-                    debateVoteData.getVoteVocab(), this.trainBillIndices,
+                    debateVoteData.getVoteVocab(),
+                    trainBillIndices,
                     pred.getXs(), pred.getYs(),
                     debateVoteData.getVoteTable());
         }
@@ -817,7 +884,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                             pred.train();
                             pred.output(new File(predFolder, MODEL_FILE));
                             outputAuthorScore(new File(predFolder, AuthorScoreFile),
-                                    debateVoteData.getAuthorVocab(), this.trainAuthorIndices,
+                                    debateVoteData.getAuthorVocab(),
+                                    trainAuthorIndices,
+                                    trainVotes,
                                     pred.getUs(),
                                     debateVoteData.getAuthorTable());
                             outputVoteScores(new File(predFolder, VoteScoreFile),
@@ -911,11 +980,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             }
 
             outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
-                    debateVoteData.getAuthorVocab(), trainAuthorIndices,
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
                     sampler.getUs(),
                     debateVoteData.getAuthorTable());
             outputVoteScores(new File(samplerFolder, VoteScoreFile),
-                    debateVoteData.getVoteVocab(), trainBillIndices,
+                    debateVoteData.getVoteVocab(),
+                    trainBillIndices,
                     sampler.getXs(), sampler.getYs(),
                     debateVoteData.getVoteTable());
         }
@@ -952,6 +1024,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testauthor")) {
+            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(teResultFolder);
+            
             SparseVector[] predictions;
             if (cmd.hasOption("parallel")) {
                 predictions = SLDAIdealPoint.parallelTest(testDebateIndices,
@@ -961,6 +1036,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         testVotes,
                         new File(samplerFolder, AbstractSampler.IterPredictionFolder),
                         sampler);
+                // TODO: average author scores
             } else {
                 predictions = sampler.test(null,
                         testDebateIndices,
@@ -969,16 +1045,16 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         testAuthorIndices,
                         testVotes,
                         null);
+                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                        debateVoteData.getAuthorVocab(),
+                        testAuthorIndices,
+                        testVotes,
+                        sampler.getPredictedUs(),
+                        debateVoteData.getAuthorTable());
             }
-            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
-            IOUtils.createFolder(teResultFolder);
 
             String predFile = PREDICTION_FILE;
             String resultFile = RESULT_FILE;
-            if (cmd.hasOption("parallel")) {
-                predFile += "-p";
-                resultFile += "-p";
-            }
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, predFile),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(teResultFolder, resultFile),
@@ -1043,7 +1119,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             sampler.iterate();
             sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile), numTopWords);
             outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
-                    debateVoteData.getAuthorVocab(), this.trainAuthorIndices,
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
                     sampler.getUs(),
                     debateVoteData.getAuthorTable());
             outputVoteScores(new File(samplerFolder, VoteScoreFile),
@@ -1084,7 +1162,72 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testauthor")) {
+            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(teResultFolder);
 
+            SparseVector[] predictions;
+            if (cmd.hasOption("parallel")) {
+                File iterPredFolderPath = new File(samplerFolder,
+                        AbstractSampler.IterPredictionFolder);
+                predictions = SNLDAIdealPoint.parallelTest(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        testAuthorIndices,
+                        testVotes,
+                        iterPredFolderPath,
+                        sampler);
+
+                // average author scores
+                String[] filenames = iterPredFolderPath.list();
+                double[] authorScores = null;
+                int count = 0;
+                for (String filename : filenames) {
+                    if (!filename.contains(AbstractVotePredictor.AuthorScoreFile)) {
+                        continue;
+                    }
+                    double[] partAuthorScores = AbstractVotePredictor.inputAuthorScores(
+                            new File(iterPredFolderPath, filename));
+                    if (authorScores == null) {
+                        authorScores = partAuthorScores;
+                    } else {
+                        for (int aa = 0; aa < authorScores.length; aa++) {
+                            authorScores[aa] += partAuthorScores[aa];
+                        }
+                    }
+                    count++;
+                }
+                for (int aa = 0; aa < authorScores.length; aa++) {
+                    authorScores[aa] /= count;
+                }
+                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                        debateVoteData.getAuthorVocab(),
+                        testAuthorIndices,
+                        testVotes,
+                        authorScores,
+                        debateVoteData.getAuthorTable());
+
+            } else {
+                predictions = sampler.test(null,
+                        testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        testAuthorIndices,
+                        testVotes,
+                        null, null, null);
+                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                        debateVoteData.getAuthorVocab(),
+                        testAuthorIndices,
+                        testVotes,
+                        sampler.getPredictedUs(),
+                        debateVoteData.getAuthorTable());
+            }
+
+            String predFile = PREDICTION_FILE;
+            String resultFile = RESULT_FILE;
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, predFile),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, resultFile),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
         }
 
         if (cmd.hasOption("visualize")) {
@@ -1202,6 +1345,13 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         return priors;
     }
 
+    /**
+     * Display prior topics.
+     *
+     * @param labelVocab
+     * @param wordVocab
+     * @param phis
+     */
     private static void displayTopics(
             ArrayList<String> labelVocab,
             ArrayList<String> wordVocab,
@@ -1234,37 +1384,35 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
      * @param outputFile Output file
      * @param authorVocab Author vocabulary
      * @param authorIndices List of selected authors
+     * @param voteMask
      * @param authorScores Learned author scores
      * @param authorTable Author information
      */
     protected void outputAuthorScore(File outputFile,
-            ArrayList<String> authorVocab, ArrayList<Integer> authorIndices,
+            ArrayList<String> authorVocab,
+            ArrayList<Integer> authorIndices,
+            boolean[][] voteMask,
             double[] authorScores,
             HashMap<String, Author> authorTable) {
-        this.trainAuthorIndices = authorIndices;
+        if (verbose) {
+            logln("Outputing author scores to " + outputFile);
+        }
         if (authorIndices == null) {
-            this.trainAuthorIndices = new ArrayList<>();
-            for (int aa = 0; aa < authorVocab.size(); aa++) {
-                this.trainAuthorIndices.add(aa);
-            }
+            throw new RuntimeException("null authorIndices");
         }
-
-        if (this.trainAuthorIndices.size() != authorScores.length) {
-            throw new RuntimeException("Mismatch. " + this.trainAuthorIndices.size()
-                    + " vs. " + authorScores.length);
+        if (authorScores == null) {
+            throw new RuntimeException("null authorScores");
         }
-
-        System.out.println("Outputing to " + outputFile);
         try {
             BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
             writer.write("Index\tID\tScore\tNumWithVotes\tNumAgainstVotes"
                     + "\tFreedomWorksID\tName\tParty\tNominateScore\n");
-            for (int ii = 0; ii < this.trainAuthorIndices.size(); ii++) {
-                int aa = this.trainAuthorIndices.get(ii);
+            for (int ii = 0; ii < authorIndices.size(); ii++) {
+                int aa = authorIndices.get(ii);
                 int withCount = 0;
                 int againstCount = 0;
                 for (int bb = 0; bb < votes[aa].length; bb++) {
-                    if (trainVotes[aa][bb]) {
+                    if (voteMask[aa][bb]) {
                         if (votes[aa][bb] == Vote.WITH) {
                             withCount++;
                         } else if (votes[aa][bb] == Vote.AGAINST) {
@@ -1308,6 +1456,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             ArrayList<String> voteVocab, ArrayList<Integer> voteIndices,
             double[] xs, double[] ys,
             HashMap<String, Vote> voteTable) {
+        if (verbose) {
+            logln("Outputing vote scores to " + outputFile);
+        }
         this.trainBillIndices = voteIndices;
         if (voteIndices == null) {
             this.trainBillIndices = new ArrayList<>();
@@ -1315,8 +1466,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 this.trainBillIndices.add(bb);
             }
         }
-
-        System.out.println("Outputing to " + outputFile);
         try {
             BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
             for (int jj = 0; jj < this.trainBillIndices.size(); jj++) {
@@ -1447,6 +1596,10 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         addOption("beta-a", "Pseudo-count for STAY");
         addOption("beta-b", "Pseudo-count for PASS");
 
+        addOption("opt-type", "Optimization type");
+        addOption("l1", "L1");
+        addOption("l2", "L2");
+
         options.addOption("mh", false, "Metropolis-Hastings");
         options.addOption("train", false, "train");
         options.addOption("dev", false, "development");
@@ -1502,6 +1655,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     break;
                 case "run":
                     expt.run();
+                    break;
+                case "adhoc":
+                    expt.adhocProcess();
                     break;
                 default:
                     throw new RuntimeException("Run mode " + runMode + " is not supported");

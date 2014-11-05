@@ -55,9 +55,13 @@ public class Debate extends LabelTextDataset {
     public int[][][] getDebateTurnWords() {
         return this.debateTurnWords;
     }
-    
+
     public ArrayList<String> getSpeakerList() {
         return this.speakerList;
+    }
+
+    public ArrayList<String> getBillList() {
+        return this.billList;
     }
 
     public void loadSpeakers(File speakerFile) throws Exception {
@@ -289,9 +293,10 @@ public class Debate extends LabelTextDataset {
             // are the same
             int[] firstTurnLabels = labels[turnIndices.get(0)];
             for (int ii = 1; ii < turnIndices.size(); ii++) {
-                if(!compareArray(firstTurnLabels, labels[turnIndices.get(ii)]))
+                if (!compareArray(firstTurnLabels, labels[turnIndices.get(ii)])) {
                     throw new RuntimeException("Labels of different turns in the "
                             + "same debate are different.");
+                }
             }
 
             this.debateTurnLabels[d] = firstTurnLabels;

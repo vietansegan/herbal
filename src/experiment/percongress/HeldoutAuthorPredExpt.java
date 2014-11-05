@@ -1,17 +1,13 @@
 package experiment.percongress;
 
-import static core.AbstractExperiment.MODEL_FILE;
-import static core.AbstractExperiment.RESULT_FILE;
-import static core.AbstractExperiment.RESULT_FOLDER;
-import static core.AbstractExperiment.TEST_PREFIX;
 import core.AbstractModel;
-import static core.AbstractRunner.logln;
 import data.Congress;
 import data.TextDataset;
 import data.Vote;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -27,6 +23,7 @@ import votepredictor.AbstractVotePredictor;
 import votepredictor.baselines.AuthorTFIDFNN;
 import votepredictor.baselines.AuthorTFNN;
 import votepredictor.baselines.LogisticRegression;
+import votepredictor.baselines.LogisticRegression.OptType;
 
 /**
  *
@@ -118,11 +115,24 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         if (verbose) {
             logln("--- --- Running logistic regressors ...");
         }
-        double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
-        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 1.0);
 
-        LogisticRegression lr = new LogisticRegression("logreg-lbfgs");
-        lr.configure(debateVoteData.getWordVocab().size(), mu, sigma);
+        String optTypeStr = CLIUtils.getStringArgument(cmd, "opt-type", "lbfgs");
+        LogisticRegression lr = new LogisticRegression("logreg");
+        switch (optTypeStr) {
+            case "lbfgs":
+                double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
+                double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 1.0);
+                lr.configure(debateVoteData.getWordVocab().size(), OptType.LBFGS,
+                        mu, sigma);
+                break;
+            case "owlqn":
+                double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.5);
+                double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 0.5);
+                lr.configure(debateVoteData.getWordVocab().size(), OptType.OWLQN, l1, l2);
+                break;
+            default:
+                throw new RuntimeException("OptType " + optTypeStr + " not supported");
+        }
         File predFolder = new File(outputFolder, lr.getName());
         IOUtils.createFolder(predFolder);
 
@@ -241,6 +251,9 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         }
     }
 
+    /**
+     * Output cross-validated data.
+     */
     private void outputCrossValidatedData() throws Exception {
         File cvFolder = new File(processedDataFolder, getConfiguredExptFolder());
         IOUtils.createFolder(cvFolder);
@@ -308,6 +321,11 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         }
     }
 
+    /**
+     * Input the cross-validated data from a fold.
+     *
+     * @param ff Fold number
+     */
     protected void inputCrossValidatedData(int ff) {
         int A = debateVoteData.getAuthorVocab().size();
         int B = debateVoteData.getVoteVocab().size();
@@ -378,7 +396,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                         + ". # documents: " + testDebateIndices.size()
                         + ". # votes: " + numTestVotes);
             }
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             e.printStackTrace();
             throw new RuntimeException("Exception while inputing fold " + ff);
         }

@@ -268,53 +268,7 @@ public class IdealPoint extends AbstractVotePredictor {
             }
         }
         return predictions;
-    }
-
-    /**
-     * Output author scores.
-     *
-     * @param outputFile Output file
-     */
-    public void outputAuthorScores(File outputFile) {
-        if (verbose) {
-            logln("Outputing author scores to " + outputFile);
-        }
-        try {
-            BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
-            writer.write("Author\tScore\n");
-            for (int aa = 0; aa < A; aa++) {
-                writer.write(authorVocab.get(authorIndices.get(aa)) + "\t" + u[aa] + "\n");
-            }
-            writer.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-            throw new RuntimeException("Exception while outputing author scores "
-                    + "to " + outputFile);
-        }
-    }
-
-    /**
-     * Output vote scores.
-     *
-     * @param outputFile Output file
-     */
-    public void outputVoteScores(File outputFile) {
-        if (verbose) {
-            logln("Outputing vote scores to " + outputFile);
-        }
-        try {
-            BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
-            writer.write("Vote\tScore\n");
-            for (int bb = 0; bb < B; bb++) {
-                writer.write(voteVocab.get(billIndices.get(bb)) + "\t" + x[bb] + "\t" + y[bb] + "\n");
-            }
-            writer.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-            throw new RuntimeException("Exception while outputing vote scores "
-                    + "to " + outputFile);
-        }
-    }
+    }    
 
     @Override
     public void output(File modelFile) {

@@ -24,13 +24,15 @@ public class AuthorVoteTextDataset extends TextDataset {
     public static final int WITH = 1;
     // header in author vocab file
     protected ArrayList<String> authorProperties;
-    // raw author list
-    protected ArrayList<String> authorList;
+    // raw inputs
+    protected ArrayList<String> authorList; // list of raw authors
+    protected ArrayList<String> billList; // list of raw bills assocated
     // raw author vote
     protected HashMap<String, HashMap<Integer, Integer>> rawAuthorVotes;
     // processed authors
     protected ArrayList<String> authorVocab;
     protected int[] authors;
+    protected String[] bills;
     protected HashMap<String, Author> authorTable;
     // votes
     protected ArrayList<String> voteVocab;
@@ -154,6 +156,14 @@ public class AuthorVoteTextDataset extends TextDataset {
             return null;
         }
         return author.getProperty(propName);
+    }
+
+    public void setBillList(ArrayList<String> billList) {
+        this.billList = billList;
+    }
+
+    public String[] getBillIds() {
+        return this.bills;
     }
 
     public void setAuthorList(ArrayList<String> authorList) {
@@ -583,6 +593,7 @@ public class AuthorVoteTextDataset extends TextDataset {
             }
             infoWriter.write(this.docIdList.get(docIndex)
                     + "\t" + authorIdx
+                    + "\t" + this.billList.get(docIndex)
                     + "\n");
         }
         infoWriter.close();
@@ -600,15 +611,18 @@ public class AuthorVoteTextDataset extends TextDataset {
         String[] sline;
         ArrayList<String> dIdList = new ArrayList<String>();
         ArrayList<Integer> aList = new ArrayList<Integer>();
+        ArrayList<String> bList = new ArrayList<>();
 
         while ((line = reader.readLine()) != null) {
             sline = line.split("\t");
             dIdList.add(sline[0]);
             aList.add(Integer.parseInt(sline[1]));
+            bList.add(sline[2]);
         }
         reader.close();
 
         this.docIds = dIdList.toArray(new String[dIdList.size()]);
+        this.bills = bList.toArray(new String[bList.size()]);
         this.authors = new int[aList.size()];
         for (int i = 0; i < this.authors.length; i++) {
             this.authors[i] = aList.get(i);

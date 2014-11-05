@@ -200,6 +200,10 @@ public class SLDAIdealPoint extends AbstractSampler {
         return this.y;
     }
 
+    public double[] getPredictedUs() {
+        return this.authorMeans;
+    }
+
     @Override
     public String getCurrentState() {
         StringBuilder str = new StringBuilder();
@@ -389,7 +393,8 @@ public class SLDAIdealPoint extends AbstractSampler {
             logln("--- # test authors: " + authorIndices.size());
         }
 
-        // sample topic assignments for test documents
+        this.setTestConfigurations(50, 100, 10, 5);
+
         this.sampleNewDocuments(getFinalStateFile(), null, words, docIndices);
 
         // predict author scores
@@ -401,7 +406,7 @@ public class SLDAIdealPoint extends AbstractSampler {
             int author = authors[dd];
             int aa = authorIndices.indexOf(author);
             if (aa < 0) {
-                throw new RuntimeException("aa = " + aa + ". " + author);
+                continue;
             }
             for (int kk : docTopics[ii].getSparseCounts().getIndices()) {
                 int count = docTopics[ii].getCount(kk);
@@ -409,8 +414,10 @@ public class SLDAIdealPoint extends AbstractSampler {
                 predAuthorDens[aa] += count;
             }
         }
+
+        this.authorMeans = new double[testA];
         for (int aa = 0; aa < testA; aa++) {
-            predAuthorScores[aa] /= predAuthorDens[aa];
+            this.authorMeans[aa] = predAuthorScores[aa] / predAuthorDens[aa];
         }
 
         // predict vote probabilities
@@ -418,7 +425,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         for (int aa = 0; aa < testA; aa++) {
             int author = authorIndices.get(aa);
             predictions[author] = new SparseVector(testVotes[author].length);
-            double authorScore = predAuthorScores[aa];
+            double authorScore = this.authorMeans[aa];
             for (int bb = 0; bb < testVotes[author].length; bb++) {
                 if (testVotes[author][bb]) {
                     double score = Math.exp(authorScore * x[bb] + y[bb]);
@@ -489,11 +496,11 @@ public class SLDAIdealPoint extends AbstractSampler {
         }
 
         // sample
-        for (iter = 0; iter < MAX_ITER; iter++) {
-            numTokensChanged = 0;
-            if (isReporting()) {
-                String str = "Iter " + iter + "/" + MAX_ITER + "\n" + getCurrentState();
-                if (iter < BURN_IN) {
+        for (iter = 0; iter < testMaxIter; iter++) {
+            boolean disp = verbose && iter % testRepInterval == 0;
+            if (disp) {
+                String str = "Iter " + iter + "/" + testMaxIter + "\n" + getCurrentState();
+                if (iter < testBurnIn) {
                     logln("--- Burning in. " + str);
                 } else {
                     logln("--- Sampling. " + str);
@@ -508,7 +515,7 @@ public class SLDAIdealPoint extends AbstractSampler {
                 topicTime = sampleZs(!REMOVE, !ADD, REMOVE, ADD, !OBSERVED);
             }
 
-            if (isReporting()) {
+            if (disp) {
                 logln("--- --- Time. Topic: " + topicTime);
                 logln("--- --- # tokens: " + numTokens
                         + ". # token changed: " + numTokensChanged
@@ -729,7 +736,6 @@ public class SLDAIdealPoint extends AbstractSampler {
         startTime = System.currentTimeMillis();
 
         for (iter = 0; iter < MAX_ITER; iter++) {
-            numTokensChanged = 0;
             if (isReporting()) {
                 double loglikelihood = this.getLogLikelihood();
                 logLikelihoods.add(loglikelihood);
@@ -824,6 +830,7 @@ public class SLDAIdealPoint extends AbstractSampler {
             boolean removeFromModel, boolean addToModel,
             boolean removeFromData, boolean addToData,
             boolean observe) {
+        numTokensChanged = 0;
         long sTime = System.currentTimeMillis();
         for (int d = 0; d < D; d++) {
             for (int n = 0; n < words[d].length; n++) {
@@ -1379,7 +1386,7 @@ public class SLDAIdealPoint extends AbstractSampler {
                 File stateFile = new File(reportFolder, filename);
                 File partialResultFile = new File(iterPredFolder,
                         IOUtils.removeExtension(filename) + ".txt");
-                SamplingTestDocumentsRunner runner = new SamplingTestDocumentsRunner(
+                SLDATestRunner runner = new SLDATestRunner(
                         sampler, stateFile, newDocIndices, newWords,
                         newAuthors, newAuthorIndices, testVotes, partialResultFile);
                 Thread thread = new Thread(runner);
@@ -1415,7 +1422,7 @@ public class SLDAIdealPoint extends AbstractSampler {
     }
 }
 
-class SamplingTestDocumentsRunner implements Runnable {
+class SLDATestRunner implements Runnable {
 
     SLDAIdealPoint sampler;
     File stateFile;
@@ -1426,7 +1433,7 @@ class SamplingTestDocumentsRunner implements Runnable {
     boolean[][] testVotes;
     File predictionFile;
 
-    public SamplingTestDocumentsRunner(SLDAIdealPoint sampler,
+    public SLDATestRunner(SLDAIdealPoint sampler,
             File stateFile,
             ArrayList<Integer> newDocIndices,
             int[][] newWords,

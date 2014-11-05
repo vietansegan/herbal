@@ -20,11 +20,138 @@ import util.evaluation.RankingEvaluation;
  */
 public abstract class AbstractVotePredictor extends AbstractModel {
 
+    public static final String AuthorScoreFile = "authors.score";
+    public static final String VoteScoreFile = "votes.score";
+
     public AbstractVotePredictor() {
     }
 
     public AbstractVotePredictor(String name) {
         super(name);
+    }
+
+    /**
+     * Output author scores.
+     *
+     * @param outputFile Output file
+     * @param authors
+     * @param authorScores
+     */
+    public static void outputAuthorScores(File outputFile,
+            String[] authors, double[] authorScores) {
+        logln("Outputing author scores to " + outputFile);
+        try {
+            BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
+            writer.write("Author\tScore\n");
+            for (int aa = 0; aa < authorScores.length; aa++) {
+                if (authors != null) {
+                    writer.write(authors[aa] + "\t" + authorScores[aa] + "\n");
+                } else {
+                    writer.write(aa + "\t" + authorScores[aa] + "\n");
+                }
+            }
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while outputing author scores "
+                    + "to " + outputFile);
+        }
+    }
+
+    /**
+     * Input author scores.
+     *
+     * @param inputFile
+     * @return
+     */
+    public static double[] inputAuthorScores(File inputFile) {
+        logln("Inputing author scores from " + inputFile);
+        double[] authorScores = null;
+        try {
+            ArrayList<Double> scoreList = new ArrayList<>();
+            BufferedReader reader = IOUtils.getBufferedReader(inputFile);
+            reader.readLine(); // header
+            String line;
+            while ((line = reader.readLine()) != null) {
+                double score = Double.parseDouble(line.split("\t")[1]);
+                scoreList.add(score);
+            }
+            reader.close();
+
+            authorScores = new double[scoreList.size()];
+            for (int ii = 0; ii < authorScores.length; ii++) {
+                authorScores[ii] = scoreList.get(ii);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while inputing author scores "
+                    + "from " + inputFile);
+        }
+        return authorScores;
+    }
+
+    /**
+     * Output vote scores.
+     *
+     * @param outputFile Output file
+     * @param votes
+     * @param voteXs
+     * @param voteYs
+     */
+    public static void outputVoteScores(File outputFile, String[] votes,
+            double[] voteXs, double[] voteYs) {
+        logln("Outputing vote scores to " + outputFile);
+        try {
+            BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
+            writer.write("Vote\tScore\n");
+            for (int bb = 0; bb < voteXs.length; bb++) {
+                if (votes != null) {
+                    writer.write(votes[bb] + "\t" + voteXs[bb] + "\t" + voteYs[bb] + "\n");
+                } else {
+                    writer.write(bb + "\t" + voteXs[bb] + "\t" + voteYs[bb] + "\n");
+                }
+            }
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while outputing vote scores "
+                    + "to " + outputFile);
+        }
+    }
+
+    /**
+     * Input vote scores.
+     *
+     * @param inputFile
+     * @return
+     */
+    public static double[][] inputVoteScores(File inputFile) {
+        logln("Inputing vote scores from " + inputFile);
+        double[][] voteScores = null;
+        try {
+            BufferedReader reader = IOUtils.getBufferedReader(inputFile);
+            reader.readLine();
+            String line;
+            ArrayList<Double> voteXs = new ArrayList<>();
+            ArrayList<Double> voteYs = new ArrayList<>();
+            while ((line = reader.readLine()) != null) {
+                String[] sline = line.split("\t");
+                voteXs.add(Double.parseDouble(sline[1]));
+                voteYs.add(Double.parseDouble(sline[2]));
+            }
+            reader.close();
+
+            voteScores = new double[voteXs.size()][2];
+            for (int ii = 0; ii < voteScores.length; ii++) {
+                voteScores[ii][0] = voteXs.get(ii);
+                voteScores[ii][1] = voteYs.get(ii);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while inputing vote scores "
+                    + "from " + inputFile);
+        }
+        return voteScores;
     }
 
     /**
@@ -64,6 +191,12 @@ public abstract class AbstractVotePredictor extends AbstractModel {
         }
     }
 
+    /**
+     * Input vote predictions.
+     *
+     * @param predFile File storing predictions
+     * @return Prediction
+     */
     public static SparseVector[] inputPredictions(File predFile) {
         SparseVector[] predictions = null;
         try {
