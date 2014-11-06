@@ -450,12 +450,17 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
     @Override
     public void run() {
         if (verbose) {
-            logln("Estimate ...");
+            logln("Running models ...");
         }
 
         setupSampling();
 
         loadFormattedData();
+
+        trainAuthorIndices = new ArrayList<>();
+        for (int aa = 0; aa < debateVoteData.getAuthorVocab().size(); aa++) {
+            trainAuthorIndices.add(aa);
+        }
 
         trainVotes = new boolean[votes.length][];
         for (int aa = 0; aa < votes.length; aa++) {
@@ -465,6 +470,21 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     trainVotes[aa][bb] = true;
                 }
             }
+        }
+
+        trainDebateIndices = new ArrayList<>();
+        for (int dd = 0; dd < debateVoteData.getWords().length; dd++) {
+            int author = debateVoteData.getAuthors()[dd];
+            if (trainAuthorIndices.contains(author)) {
+                this.trainDebateIndices.add(dd);
+            }
+        }
+
+        if (verbose) {
+            logln("--- # lawmakers: " + trainAuthorIndices.size()
+                    + " / " + debateVoteData.getAuthorVocab().size());
+            logln("--- # debates: " + this.trainDebateIndices.size()
+                    + " / " + debateVoteData.getWords().length);
         }
 
         File configureFolder = new File(new File(experimentPath, congressNum),
@@ -1026,7 +1046,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         if (cmd.hasOption("testauthor")) {
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
-            
+
             SparseVector[] predictions;
             if (cmd.hasOption("parallel")) {
                 predictions = SLDAIdealPoint.parallelTest(testDebateIndices,
@@ -1237,7 +1257,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     votes, trainAuthorIndices, trainBillIndices,
                     trainVotes);
             sampler.inputFinalState();
-            File htmlFile = new File(samplerFolder, sampler.getBasename() + ".html");
+            File htmlFile = new File(samplerFolder, sampler.getBasename()
+                    + "-" + congressNum + ".html");
             sampler.outputHTML(htmlFile,
                     trainDebateIndices,
                     debateVoteData.getDocIds(),
@@ -1446,7 +1467,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
      * Output vote scores.
      *
      * @param outputFile Output file
-     * @param voteVocab List of vot
+     * @param voteVocab List of votes
      * @param voteIndices
      * @param xs
      * @param ys

@@ -1,6 +1,5 @@
 package experiment.percongress;
 
-import data.AuthorVoteTextDataset;
 import data.Congress;
 import data.TextDataset;
 import data.Vote;
@@ -31,7 +30,7 @@ public class GOPExpt extends VotePredExpt {
     @Override
     public void run() {
         if (verbose) {
-            logln("Estimate ...");
+            logln("Running models ...");
         }
 
         setupSampling();
