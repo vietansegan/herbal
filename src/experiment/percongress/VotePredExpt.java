@@ -1378,7 +1378,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             sampler.train(trainDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
-                    votes,
+                    votes, trainAuthorIndices, trainBillIndices,
                     trainVotes);
             sampler.initialize();
             sampler.iterate();

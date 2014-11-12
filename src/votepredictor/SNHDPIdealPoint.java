@@ -45,6 +45,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
     // input
     protected int[][] words;
     protected ArrayList<Integer> docIndices;
+    protected ArrayList<Integer> authorIndices; // potentially not needed
+    protected ArrayList<Integer> billIndices;   // potentially not needed
     protected int[] authors; // [D]: author of each document
     protected int[][] votes;
     protected boolean[][] trainVotes;
@@ -302,14 +304,58 @@ public class SNHDPIdealPoint extends AbstractSampler {
     /**
      * Set training data.
      *
-     * @param words Document words
      * @param docIndices Indices of selected documents
+     * @param words Document words
      * @param authors Document authors
      * @param votes All votes
+     * @param authorIndices Indices of training authors
+     * @param billIndices Indices of training bills
      * @param trainVotes Training votes
      */
-    public void train(ArrayList<Integer> docIndices, int[][] words,
-            int[] authors, int[][] votes, boolean[][] trainVotes) {
+    public void train(ArrayList<Integer> docIndices,
+            int[][] words,
+            int[] authors,
+            int[][] votes,
+            ArrayList<Integer> authorIndices,
+            ArrayList<Integer> billIndices,
+            boolean[][] trainVotes) {
+        // list of authors
+        this.authorIndices = authorIndices;
+        if (authorIndices == null) {
+            this.authorIndices = new ArrayList<>();
+            for (int aa = 0; aa < votes.length; aa++) {
+                this.authorIndices.add(aa);
+            }
+        }
+        this.A = this.authorIndices.size();
+
+        HashMap<Integer, Integer> inverseAuthorMap = new HashMap<>();
+        for (int ii = 0; ii < A; ii++) {
+            int aa = this.authorIndices.get(ii);
+            inverseAuthorMap.put(aa, ii);
+        }
+
+        // list of bills
+        this.billIndices = billIndices;
+        if (billIndices == null) {
+            this.billIndices = new ArrayList<>();
+            for (int bb = 0; bb < votes[0].length; bb++) {
+                this.billIndices.add(bb);
+            }
+        }
+        this.B = this.billIndices.size();
+
+        this.votes = new int[A][B];
+        this.trainVotes = new boolean[A][B];
+        for (int ii = 0; ii < A; ii++) {
+            int aa = this.authorIndices.get(ii);
+            for (int jj = 0; jj < B; jj++) {
+                int bb = this.billIndices.get(jj);
+                this.votes[ii][jj] = votes[aa][bb];
+                this.trainVotes[ii][jj] = trainVotes[aa][bb];
+            }
+        }
+
         this.docIndices = docIndices;
         if (this.docIndices == null) { // add all documents
             this.docIndices = new ArrayList<>();
@@ -323,10 +369,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
         for (int ii = 0; ii < this.D; ii++) {
             int dd = this.docIndices.get(ii);
             this.words[ii] = words[dd];
-            this.authors[ii] = authors[dd];
+            this.authors[ii] = inverseAuthorMap.get(authors[dd]);
         }
-        this.votes = votes;
-        this.trainVotes = trainVotes;
 
         this.prepareDataStatistics();
 
