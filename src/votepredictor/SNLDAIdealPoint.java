@@ -1248,6 +1248,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
         return System.currentTimeMillis() - sTime;
     }
 
+    /**
+     * Update Us.
+     */
     private void updateUs() {
         for (int a = 0; a < A; a++) {
             double grad = 0.0;
@@ -1266,6 +1269,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
         }
     }
 
+    /**
+     * Update Xs and Ys.
+     */
     public void updateXYs() {
         for (int b = 0; b < B; b++) {
             double gradX = 0.0;
@@ -1395,6 +1401,11 @@ public class SNLDAIdealPoint extends AbstractSampler {
         }
     }
 
+    /**
+     * Input a learned model.
+     *
+     * @param zipFilepath Compressed learned state file
+     */
     void inputModel(String zipFilepath) {
         if (verbose) {
             logln("--- --- Loading model from " + zipFilepath);
@@ -1466,6 +1477,11 @@ public class SNLDAIdealPoint extends AbstractSampler {
         }
     }
 
+    /**
+     * Input a set of assignments.
+     *
+     * @param zipFilepath Compressed learned state file
+     */
     void inputAssignments(String zipFilepath) throws Exception {
         if (verbose) {
             logln("--- --- Loading assignments from " + zipFilepath);
@@ -1690,6 +1706,53 @@ public class SNLDAIdealPoint extends AbstractSampler {
             throw new RuntimeException("Exception while outputing topics "
                     + outputFile);
         }
+    }
+
+    /**
+     * Get the topic distribution for each author.
+     *
+     * @return
+     */
+    public double[][] getAuthorTopicDistributions() {
+        // counts 
+        SparseCount[] authorTopicCounts = new SparseCount[A];
+        for (int aa = 0; aa < A; aa++) {
+            authorTopicCounts[aa] = new SparseCount();
+        }
+        for (int kk = 0; kk < K; kk++) {
+            Node node = this.root.getChild(kk);
+            for (int dd : node.subtreeTokenCounts.getIndices()) {
+                int aa = authors[dd];
+                authorTopicCounts[aa].changeCount(kk, node.subtreeTokenCounts.getCount(dd));
+            }
+        }
+
+        // normalize
+        double[][] authorTopicDists = new double[A][K];
+        for (int aa = 0; aa < A; aa++) {
+            int totalCount = authorTopicCounts[aa].getCountSum();
+            if (totalCount == 0) {
+                Arrays.fill(authorTopicDists[aa], 1.0 / K);
+            } else {
+                for (int kk = 0; kk < K; kk++) {
+                    authorTopicDists[aa][kk] = (double) authorTopicCounts[aa].getCount(kk) / totalCount;
+                }
+            }
+        }
+        return authorTopicDists;
+    }
+
+    /**
+     * Get regression parameters of first-level topics.
+     *
+     * @return
+     */
+    public double[] getTopicScores() {
+        double[] topicScores = new double[K];
+        for (int kk = 0; kk < K; kk++) {
+            topicScores[kk] = this.root.getChild(kk).eta;
+        }
+        return topicScores;
     }
 
     public void outputHTML(File htmlFile,

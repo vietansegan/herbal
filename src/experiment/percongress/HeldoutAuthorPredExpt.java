@@ -71,6 +71,8 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
 
             runModel(foldFolder);
         }
+
+        evaluate();
     }
 
     /**

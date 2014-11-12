@@ -216,6 +216,11 @@ public class LogisticRegression extends AbstractVotePredictor {
             ws[vv] = SamplerUtils.getGaussian(mu, sigma);
         }
 
+        if (designMatrix.length == 0) {
+            System.out.println("Skipping bill " + bb);
+            return null;
+        }
+
         if (this.optType == OptType.LBFGS) {
             RidgeLogisticRegressionLBFGS logreg = new RidgeLogisticRegressionLBFGS(
                     labels, ws, designMatrix, mu, sigma);
@@ -308,7 +313,10 @@ public class LogisticRegression extends AbstractVotePredictor {
             while ((line = reader.readLine()) != null) {
                 sline = line.split("\t");
                 int bill = Integer.parseInt(sline[0]);
-                double[] ws = MiscUtils.stringToDoubleArray(sline[1]);
+                double[] ws = null;
+                if (!sline[1].equals("null")) {
+                    ws = MiscUtils.stringToDoubleArray(sline[1]);
+                }
                 this.weights.put(bill, ws);
             }
             reader.close();
@@ -326,7 +334,11 @@ public class LogisticRegression extends AbstractVotePredictor {
         try {
             BufferedWriter writer = IOUtils.getBufferedWriter(modelFile);
             for (int bb : this.weights.keySet()) {
-                writer.write(bb + "\t" + MiscUtils.arrayToString(this.weights.get(bb)) + "\n");
+                if (this.weights.get(bb) == null) {
+                    writer.write(bb + "\tnull\n");
+                } else {
+                    writer.write(bb + "\t" + MiscUtils.arrayToString(this.weights.get(bb)) + "\n");
+                }
             }
             writer.close();
         } catch (IOException e) {
