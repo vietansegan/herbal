@@ -114,11 +114,6 @@ public class BayesianMultIdealPoint extends BayesianIdealPoint {
             }
             updateUs();
             updateXYs();
-
-//            if (verbose && debug) {
-//                System.out.println("Iter = " + iter);
-//                debug();
-//            }
         }
     }
 

@@ -2,6 +2,13 @@ package votepredictor.baselines;
 
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import data.Vote;
+import de.bwaldvogel.liblinear.Feature;
+import de.bwaldvogel.liblinear.FeatureNode;
+import de.bwaldvogel.liblinear.Linear;
+import de.bwaldvogel.liblinear.Parameter;
+import de.bwaldvogel.liblinear.Problem;
+import de.bwaldvogel.liblinear.SolverType;
+import de.bwaldvogel.liblinear.Model;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -12,8 +19,11 @@ import optimization.OWLQNLogisticRegression;
 import optimization.RidgeLogisticRegressionLBFGS;
 import util.IOUtils;
 import util.MiscUtils;
+import util.MismatchRuntimeException;
 import util.SamplerUtils;
 import util.SparseVector;
+import util.StatUtils;
+import util.normalizer.AbstractNormalizer;
 import votepredictor.AbstractVotePredictor;
 
 /**
@@ -26,7 +36,12 @@ public class LogisticRegression extends AbstractVotePredictor {
 
     public enum OptType {
 
-        LBFGS, OWLQN
+        LBFGS, OWLQN, LIBLINEAR
+    };
+
+    public enum NormalizeType {
+
+        MINMAX, ZSCORE, NONE
     };
     // input
     protected int V;
@@ -37,15 +52,23 @@ public class LogisticRegression extends AbstractVotePredictor {
 
     // configure
     protected OptType optType;
+    protected NormalizeType normType;
+    // L-BFGS
     protected double mu;
     protected double sigma;
+    // OWL-QN
     protected double l1;
     protected double l2;
+    // LIBLINEAR
+    protected double c;
+    protected double epsilon;
+    protected Model[] models;
 
     protected SparseVector[] authorVectors;                 // A
     protected HashMap<Integer, Integer>[] authorVoteMap;    // A
 
     protected HashMap<Integer, double[]> weights; // B * V
+    protected AbstractNormalizer[] normalizers;
 
     public LogisticRegression() {
         this.name = "logreg";
@@ -55,33 +78,53 @@ public class LogisticRegression extends AbstractVotePredictor {
         super(bname);
     }
 
-    public void configure(int V) {
-        this.configure(V, OptType.LBFGS, 0.0, 1.0);
+    public OptType getOptType() {
+        return this.optType;
     }
 
-    public void configure(int V, OptType optType, double param1, double param2) {
+    public void configure(int V) {
+        this.configure(V, OptType.LBFGS, NormalizeType.MINMAX, 0.0, 1.0);
+    }
+
+    public void configure(int V, OptType optType, NormalizeType normType,
+            double param1, double param2) {
         this.V = V;
         this.optType = optType;
+        this.normType = normType;
         if (this.optType == OptType.LBFGS) {
             this.mu = param1;
             this.sigma = param2;
         } else if (this.optType == OptType.OWLQN) {
             this.l1 = param1;
             this.l2 = param2;
+        } else if (this.optType == OptType.LIBLINEAR) {
+            this.c = param1;
+            this.epsilon = param2;
         } else {
             throw new RuntimeException("Optimization type " + optType + " not supported");
+        }
+
+        if (verbose) {
+            logln("Configured.");
+            logln("--- Opt type: " + this.optType);
+            logln("--- Param 1: " + param1);
+            logln("--- Param 2: " + param2);
         }
     }
 
     @Override
     public String getName() {
-        String configName = this.name + "-" + this.optType;
+        String configName = this.name + "-" + this.optType
+                + "-" + this.normType;
         if (this.optType == OptType.LBFGS) {
             configName += "_m-" + MiscUtils.formatDouble(mu)
                     + "_s-" + MiscUtils.formatDouble(sigma);
         } else if (this.optType == OptType.OWLQN) {
             configName += "_l1-" + MiscUtils.formatDouble(l1)
                     + "_l2-" + MiscUtils.formatDouble(l2);
+        } else if (this.optType == OptType.LIBLINEAR) {
+            configName += "_c-" + MiscUtils.formatDouble(c)
+                    + "_e-" + MiscUtils.formatDouble(epsilon);
         } else {
             throw new RuntimeException("Optimization type " + optType + " not supported");
         }
@@ -99,6 +142,8 @@ public class LogisticRegression extends AbstractVotePredictor {
      * @param authorIndices
      * @param billIndices
      * @param trainVotes
+     * @param addFeatures Additional feature vector for each author
+     * @param Fs
      */
     public void train(ArrayList<Integer> docIndices,
             int[][] words,
@@ -106,10 +151,26 @@ public class LogisticRegression extends AbstractVotePredictor {
             int[][] votes,
             ArrayList<Integer> authorIndices,
             ArrayList<Integer> billIndices,
-            boolean[][] trainVotes) {
+            boolean[][] trainVotes,
+            ArrayList<SparseVector[]> addFeatures,
+            ArrayList<Integer> Fs) {
         if (verbose) {
             logln("Setting up training ...");
         }
+
+        if (Fs == null || addFeatures == null) {
+            throw new RuntimeException("Additional features can be empty but not null");
+        }
+
+        if (Fs.size() != addFeatures.size()) {
+            throw new MismatchRuntimeException(addFeatures.size(), Fs.size());
+        }
+
+        int totalF = 0;
+        for (int F : Fs) {
+            totalF += F;
+        }
+
         // list of training authors
         this.authorIndices = authorIndices;
         if (authorIndices == null) {
@@ -151,8 +212,10 @@ public class LogisticRegression extends AbstractVotePredictor {
 
         this.authorVectors = new SparseVector[A];
         for (int aa = 0; aa < A; aa++) {
-            this.authorVectors[aa] = new SparseVector(V);
+            this.authorVectors[aa] = new SparseVector(V + totalF);
         }
+
+        // lexical features
         for (int dd : docIndices) {
             int author = authors[dd];
             int aa = this.authorIndices.indexOf(author);
@@ -167,14 +230,47 @@ public class LogisticRegression extends AbstractVotePredictor {
             authorVec.normalize();
         }
 
+        // additional features
+        if (totalF != 0) {
+            int startIdx = V;
+            for (int ii = 0; ii < Fs.size(); ii++) {
+                for (int aa = 0; aa < A; aa++) {
+                    SparseVector authorAddFeatures = addFeatures.get(ii)[aa];
+                    for (int idx : authorAddFeatures.getIndices()) {
+                        authorVectors[aa].set(startIdx + idx, authorAddFeatures.get(idx));
+                    }
+                }
+                startIdx += Fs.get(ii);
+            }
+        }
+
+//        normalizers = StatUtils.minmaxNormalizeTrainingData(authorVectors, V + totalF);
+        if (normType == NormalizeType.MINMAX) {
+            normalizers = StatUtils.minmaxNormalizeTrainingData(authorVectors, V + totalF);
+        } else if (normType == NormalizeType.ZSCORE) {
+            normalizers = StatUtils.zNormalizeTrainingData(authorVectors, V + totalF);
+        } else if (normType == NormalizeType.NONE) {
+            normalizers = null;
+        } else {
+            throw new RuntimeException("Normalization type " + normType
+                    + " is not supported");
+        }
+
         // train a logistic regressor for each bill
         if (verbose) {
             logln("Learning parameters ...");
         }
-        this.weights = new HashMap<>();
-        for (int bb = 0; bb < B; bb++) {
-            int bill = this.billIndices.get(bb);
-            this.weights.put(bill, trainLogisticRegressor(bb));
+        if (this.optType == OptType.LIBLINEAR) {
+            this.models = new Model[B];
+            for (int bb = 0; bb < B; bb++) {
+                trainLogisticRegressor(bb, V + totalF);
+            }
+        } else {
+            this.weights = new HashMap<>();
+            for (int bb = 0; bb < B; bb++) {
+                int bill = this.billIndices.get(bb);
+                this.weights.put(bill, trainLogisticRegressor(bb, V + totalF));
+            }
         }
     }
 
@@ -184,7 +280,7 @@ public class LogisticRegression extends AbstractVotePredictor {
      * @param bb Bill index
      * @return Weight vector
      */
-    private double[] trainLogisticRegressor(int bb) {
+    private double[] trainLogisticRegressor(int bb, int numFeatures) {
         if (verbose) {
             logln("--- Learning logistic regressor for bill " + bb + " / " + B);
         }
@@ -211,13 +307,13 @@ public class LogisticRegression extends AbstractVotePredictor {
             designMatrix[ii] = authorVecList.get(ii);
         }
 
-        double[] ws = new double[V];
-        for (int vv = 0; vv < V; vv++) {
+        double[] ws = new double[numFeatures];
+        for (int vv = 0; vv < numFeatures; vv++) {
             ws[vv] = SamplerUtils.getGaussian(mu, sigma);
         }
 
         if (designMatrix.length == 0) {
-            System.out.println("Skipping bill " + bb);
+            System.out.println("Skipping empty bill " + bb);
             return null;
         }
 
@@ -237,33 +333,89 @@ public class LogisticRegression extends AbstractVotePredictor {
             }
 
             // update regression parameters
-            ws = new double[V];
-            for (int vv = 0; vv < V; vv++) {
+            ws = new double[numFeatures];
+            for (int vv = 0; vv < numFeatures; vv++) {
                 ws[vv] = logreg.getParameter(vv);
             }
         } else if (this.optType == OptType.OWLQN) {
             OWLQNLogisticRegression logreg = new OWLQNLogisticRegression(name, l1, l2);
-            logreg.train(designMatrix, labels, V);
-
-            ws = new double[V]; // update regression parameters
-            System.arraycopy(logreg.getWeights(), 0, ws, 0, V);
+            logreg.train(designMatrix, labels, numFeatures);
+            ws = new double[numFeatures]; // update regression parameters
+            System.arraycopy(logreg.getWeights(), 0, ws, 0, numFeatures);
+        } else if (this.optType == OptType.LIBLINEAR) {
+            Problem problem = new Problem();
+            problem.l = designMatrix.length; // number of training examples
+            problem.n = numFeatures;
+            problem.x = new FeatureNode[designMatrix.length][numFeatures];
+            for (int a = 0; a < designMatrix.length; a++) {
+                for (int v = 0; v < numFeatures; v++) {
+                    problem.x[a][v] = new FeatureNode(v + 1, designMatrix[a].get(v));
+                }
+            }
+            for (Feature[] nodes : problem.x) {
+                int indexBefore = 0;
+                for (Feature n : nodes) {
+                    if (n.getIndex() <= indexBefore) {
+                        throw new IllegalArgumentException("Hello: feature nodes "
+                                + "must be sorted by index in ascending order. "
+                                + indexBefore + " vs. " + n.getIndex()
+                                + "\t" + nodes.length);
+                    }
+                    indexBefore = n.getIndex();
+                }
+            }
+            double[] dLabels = new double[labels.length];
+            for (int ii = 0; ii < labels.length; ii++) {
+                dLabels[ii] = labels[ii];
+            }
+            problem.y = dLabels;
+            Parameter parameter = new Parameter(SolverType.L2R_LR, c, epsilon);
+            this.models[bb] = Linear.train(problem, parameter);
         }
 
         return ws;
     }
 
+    /**
+     * Make predictions on test data.
+     *
+     * @param docIndices
+     * @param words
+     * @param authors
+     * @param authorIndices
+     * @param testVotes
+     * @param addFeatures Additional feature vector for each author
+     * @param Fs
+     * @return
+     */
     public SparseVector[] test(ArrayList<Integer> docIndices,
             int[][] words,
             int[] authors,
             ArrayList<Integer> authorIndices,
-            boolean[][] testVotes) {
+            boolean[][] testVotes,
+            ArrayList<SparseVector[]> addFeatures,
+            ArrayList<Integer> Fs) {
         if (authorIndices == null) {
             throw new RuntimeException("List of test authors is null");
         }
+
+        if (Fs == null || addFeatures == null) {
+            throw new RuntimeException("Additional features can be empty but not null");
+        }
+
+        if (Fs.size() != addFeatures.size()) {
+            throw new MismatchRuntimeException(addFeatures.size(), Fs.size());
+        }
+
+        int totalF = 0;
+        for (int F : Fs) {
+            totalF += F;
+        }
+
         int testA = authorIndices.size();
         SparseVector[] testAuthorVecs = new SparseVector[testA];
         for (int aa = 0; aa < testA; aa++) {
-            testAuthorVecs[aa] = new SparseVector(this.V);
+            testAuthorVecs[aa] = new SparseVector(V + totalF);
         }
         if (docIndices == null) { // add all documents
             docIndices = new ArrayList<>();
@@ -286,64 +438,124 @@ public class LogisticRegression extends AbstractVotePredictor {
             testAuthorVec.normalize();
         }
 
+        // additional features
+        if (totalF != 0) {
+            int startIdx = V;
+            for (int ii = 0; ii < Fs.size(); ii++) {
+                for (int aa = 0; aa < testA; aa++) {
+                    SparseVector authorAddFeatures = addFeatures.get(ii)[aa];
+                    for (int idx : authorAddFeatures.getIndices()) {
+                        testAuthorVecs[aa].set(startIdx + idx, authorAddFeatures.get(idx));
+                    }
+                }
+                startIdx += Fs.get(ii);
+            }
+        }
+
+        if (normType == NormalizeType.MINMAX || normType == NormalizeType.ZSCORE) {
+            StatUtils.normalizeTestData(testAuthorVecs, normalizers);
+        } else if (normType == NormalizeType.NONE) {
+            if (normalizers != null) {
+                throw new RuntimeException();
+            }
+        } else {
+            throw new RuntimeException("Normalization type " + normType
+                    + " is not supported");
+        }
+
         SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < testA; aa++) {
-            int author = authorIndices.get(aa);
-            predictions[author] = new SparseVector(testVotes[author].length);
-            for (int bb = 0; bb < testVotes[author].length; bb++) {
-                if (testVotes[author][bb]) {
-                    double val = Math.exp(testAuthorVecs[aa].dotProduct(weights.get(bb)));
-                    predictions[author].set(bb, val / (1.0 + val));
+        if (this.optType == OptType.LIBLINEAR) {
+            for (int aa = 0; aa < testA; aa++) {
+                int author = authorIndices.get(aa);
+                predictions[author] = new SparseVector(testVotes[author].length);
+            }
+
+            for (int bb = 0; bb < models.length; bb++) {
+                for (int aa = 0; aa < testA; aa++) {
+                    if (testVotes[authorIndices.get(aa)][bb]) {
+                        Feature[] instance = new Feature[testAuthorVecs[aa].getDimension()];
+                        for (int v = 0; v < testAuthorVecs[aa].getDimension(); v++) {
+                            instance[v] = new FeatureNode(v + 1, testAuthorVecs[aa].get(v));
+                        }
+                        double predVal = Linear.predict(models[bb], instance);
+                        predictions[authorIndices.get(aa)].set(bb, predVal);
+                    }
+                }
+            }
+        } else {
+            for (int aa = 0; aa < testA; aa++) {
+                int author = authorIndices.get(aa);
+                predictions[author] = new SparseVector(testVotes[author].length);
+                for (int bb = 0; bb < testVotes[author].length; bb++) {
+                    if (testVotes[author][bb]) {
+                        double val = Math.exp(testAuthorVecs[aa].dotProduct(weights.get(bb)));
+                        predictions[author].set(bb, val / (1.0 + val));
+                    }
                 }
             }
         }
+
         return predictions;
     }
 
     @Override
-    public void input(File modelFile) {
+    public void input(File modelPath) {
         if (verbose) {
-            logln("Inputing model from " + modelFile);
+            logln("Inputing model from " + modelPath);
         }
         try {
-            this.weights = new HashMap<>();
-            BufferedReader reader = IOUtils.getBufferedReader(modelFile);
-            String line;
-            String[] sline;
-            while ((line = reader.readLine()) != null) {
-                sline = line.split("\t");
-                int bill = Integer.parseInt(sline[0]);
-                double[] ws = null;
-                if (!sline[1].equals("null")) {
-                    ws = MiscUtils.stringToDoubleArray(sline[1]);
+            if (this.optType == OptType.LIBLINEAR) {
+                String[] filenames = modelPath.list();
+                this.models = new Model[filenames.length];
+                for (int bb = 0; bb < this.models.length; bb++) {
+                    this.models[bb] = Linear.loadModel(new File(modelPath, bb + ".model"));
                 }
-                this.weights.put(bill, ws);
+            } else {
+                this.weights = new HashMap<>();
+                BufferedReader reader = IOUtils.getBufferedReader(modelPath);
+                String line;
+                String[] sline;
+                while ((line = reader.readLine()) != null) {
+                    sline = line.split("\t");
+                    int bill = Integer.parseInt(sline[0]);
+                    double[] ws = null;
+                    if (!sline[1].equals("null")) {
+                        ws = MiscUtils.stringToDoubleArray(sline[1]);
+                    }
+                    this.weights.put(bill, ws);
+                }
+                reader.close();
             }
-            reader.close();
         } catch (IOException | NumberFormatException e) {
             e.printStackTrace();
-            throw new RuntimeException("Exception while inputing model from " + modelFile);
+            throw new RuntimeException("Exception while inputing model from " + modelPath);
         }
     }
 
     @Override
-    public void output(File modelFile) {
+    public void output(File modelPath) {
         if (verbose) {
-            logln("Outputing model to " + modelFile);
+            logln("Outputing model to " + modelPath);
         }
         try {
-            BufferedWriter writer = IOUtils.getBufferedWriter(modelFile);
-            for (int bb : this.weights.keySet()) {
-                if (this.weights.get(bb) == null) {
-                    writer.write(bb + "\tnull\n");
-                } else {
-                    writer.write(bb + "\t" + MiscUtils.arrayToString(this.weights.get(bb)) + "\n");
+            if (this.optType == OptType.LIBLINEAR) {
+                for (int bb = 0; bb < models.length; bb++) {
+                    this.models[bb].save(new File(modelPath, bb + ".model"));
                 }
+            } else {
+                BufferedWriter writer = IOUtils.getBufferedWriter(modelPath);
+                for (int bb : this.weights.keySet()) {
+                    if (this.weights.get(bb) == null) {
+                        writer.write(bb + "\tnull\n");
+                    } else {
+                        writer.write(bb + "\t" + MiscUtils.arrayToString(this.weights.get(bb)) + "\n");
+                    }
+                }
+                writer.close();
             }
-            writer.close();
         } catch (IOException e) {
             e.printStackTrace();
-            throw new RuntimeException("Exception while outputing model to " + modelFile);
+            throw new RuntimeException("Exception while outputing model to " + modelPath);
         }
     }
 }

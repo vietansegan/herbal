@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Stack;
 import optimization.RidgeLinearRegressionLBFGS;
+import sampler.unsupervised.LDA;
 import sampler.unsupervised.RecursiveLDA;
 import sampling.likelihood.CascadeDirMult.PathAssumption;
 import sampling.likelihood.DirMult;
@@ -39,7 +40,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
     protected double[] gammaScales; // scale of bias coins
     public double rho;
     public double mu;
-    public double sigma;
+    public double[] sigmas;
+    public double ipSigma;
     public int numSteps = 20;
     public double epsilon = 0.01;
     // input
@@ -60,6 +62,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
     protected int L = 3; // number of levels
     // configuration
     protected PathAssumption pathAssumption;
+    protected boolean hasRootTopic;
     // latent
     Node root;
     Node[][] z;
@@ -100,6 +103,10 @@ public class SNHDPIdealPoint extends AbstractSampler {
         this.voteVocab = voteVoc;
     }
 
+    protected double getSigma(int l) {
+        return this.sigmas[l];
+    }
+
     protected double getLocalAlpha(int l) {
         return this.localAlphas[l];
     }
@@ -131,7 +138,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
     public double[] getYs() {
         return this.y;
     }
-    
+
     public double[] getPredictedUs() {
         return this.authorMeans;
     }
@@ -147,7 +154,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 sampler.gammaScales,
                 sampler.rho,
                 sampler.mu,
-                sampler.sigma,
+                sampler.sigmas,
+                sampler.ipSigma,
+                sampler.hasRootTopic,
                 sampler.initState,
                 sampler.pathAssumption,
                 sampler.paramOptimized,
@@ -167,7 +176,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
             double[] gamma_scales,
             double rho,
             double mu, // mean of Gaussian for regression parameters
-            double sigma, // stadard deviation of Gaussian for regression parameters
+            double[] sigmas, // stadard deviation of Gaussian for regression parameters
+            double ipSigma,
+            boolean hasRootTopic,
             InitialState initState,
             PathAssumption pathAssumption,
             boolean paramOpt,
@@ -187,7 +198,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
         this.gammaScales = gamma_scales;
         this.rho = rho;
         this.mu = mu;
-        this.sigma = sigma;
+        this.sigmas = sigmas;
+        this.ipSigma = ipSigma;
+        this.hasRootTopic = hasRootTopic;
 
         this.hyperparams = new ArrayList<Double>();
         this.sampledParams = new ArrayList<ArrayList<Double>>();
@@ -208,8 +221,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
         if (verbose) {
             logln("--- V = " + this.V);
             logln("--- K = " + this.K);
-            logln("--- A = " + this.A);
-            logln("--- B = " + this.B);
             logln("--- folder\t" + folder);
             logln("--- alphas:\t" + MiscUtils.arrayToString(local_alphas));
             logln("--- betas:\t" + MiscUtils.arrayToString(betas));
@@ -217,7 +228,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
             logln("--- gamma scales:\t" + MiscUtils.arrayToString(gamma_scales));
             logln("--- rho:\t" + MiscUtils.formatDouble(rho));
             logln("--- reg mu:\t" + MiscUtils.formatDouble(mu));
-            logln("--- reg sigma:\t" + MiscUtils.formatDouble(sigma));
+            logln("--- reg sigmas:\t" + MiscUtils.arrayToString(sigmas));
+            logln("--- ideal point sigma:\t" + MiscUtils.formatDouble(ipSigma));
+            logln("--- has root topic:\t" + hasRootTopic);
             logln("--- burn-in:\t" + BURN_IN);
             logln("--- max iter:\t" + MAX_ITER);
             logln("--- sample lag:\t" + LAG);
@@ -256,9 +269,14 @@ public class SNHDPIdealPoint extends AbstractSampler {
             str.append("-").append(MiscUtils.formatDouble(gs));
         }
         str.append("_r-").append(formatter.format(rho))
-                .append("_m-").append(formatter.format(mu))
-                .append("_s-").append(formatter.format(sigma));
+                .append("_m-").append(formatter.format(mu));
+        str.append("_ss");
+        for (double ss : sigmas) {
+            str.append("-").append(MiscUtils.formatDouble(ss));
+        }
+        str.append("_s-").append(formatter.format(ipSigma));
         str.append("_opt-").append(this.paramOptimized);
+        str.append("_rt-").append(this.hasRootTopic);
         str.append("_").append(pathAssumption);
         this.name = str.toString();
     }
@@ -345,6 +363,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
         this.B = this.billIndices.size();
 
+        // votes and training votes
         this.votes = new int[A][B];
         this.trainVotes = new boolean[A][B];
         for (int ii = 0; ii < A; ii++) {
@@ -356,6 +375,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             }
         }
 
+        // documents
         this.docIndices = docIndices;
         if (this.docIndices == null) { // add all documents
             this.docIndices = new ArrayList<>();
@@ -422,7 +442,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
         return predictions;
     }
-    
+
     /**
      * Make prediction for held-out voters using their text using the final
      * learned model. This can only make predictions on existing bills, so no
@@ -523,7 +543,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
 
         return predictions;
     }
-    
+
     /**
      * Sample topic assignments for all tokens in a set of test documents.
      *
@@ -625,7 +645,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             logln("Initializing ...");
         }
         iter = INIT;
-        initializeModelStructure();
+        initializeModelStructureOneLevel();
         initializeDataStructure();
         initializeUXY();
         initializeAssignments();
@@ -639,7 +659,81 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
     }
 
-    protected void initializeModelStructure() {
+    /**
+     * Run LDA to initialize the first-level nodes.
+     */
+    protected void initializeModelStructureOneLevel() {
+        // run LDA
+        int lda_burnin = 10;
+        int lda_maxiter = 100;
+        int lda_samplelag = 10;
+        LDA lda = new LDA();
+        lda.setDebug(debug);
+        lda.setVerbose(verbose);
+        lda.setLog(false);
+        double lda_alpha = 0.1;
+        double lda_beta = 0.1;
+
+        lda.configure(folder, V, K, lda_alpha, lda_beta, initState, paramOptimized,
+                lda_burnin, lda_maxiter, lda_samplelag, lda_samplelag);
+        try {
+            File ldaFile = new File(lda.getSamplerFolderPath(), basename + ".zip");
+            lda.train(words, null);
+            if (ldaFile.exists()) {
+                if (verbose) {
+                    logln("--- --- LDA file exists. Loading from " + ldaFile);
+                }
+                lda.inputState(ldaFile);
+            } else {
+                if (verbose) {
+                    logln("--- --- LDA not found. Running LDA ...");
+                }
+                lda.initialize(null, issuePhis);
+                lda.iterate();
+                IOUtils.createFolder(lda.getSamplerFolderPath());
+                lda.outputState(ldaFile);
+                lda.setWordVocab(wordVocab);
+                lda.outputTopicTopWords(new File(lda.getSamplerFolderPath(), TopWordFile), 20);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while running LDA for initialization");
+        }
+        setLog(log);
+
+        DirMult rootTopic = new DirMult(V, getBeta(0) * V, background);
+        this.root = new Node(iter, 0, 0, false, rootTopic, null, 0.0);
+        for (int kk = 0; kk < K; kk++) {
+            DirMult issueTopic = new DirMult(V, getBeta(1) * V,
+                    lda.getTopicWords()[kk].getDistribution());
+            Node issueNode = new Node(iter, kk, 1, true, issueTopic, root,
+                    SamplerUtils.getGaussian(mu, getSigma(1)));
+            root.addChild(kk, issueNode);
+        }
+
+        // initialize theta and pi
+        Stack<Node> stack = new Stack<>();
+        stack.add(root);
+        while (!stack.isEmpty()) {
+            Node node = stack.pop();
+            node.changeStatus();
+            if (node.getLevel() < L - 1) {
+                for (Node child : node.getChildren()) {
+                    stack.add(child);
+                }
+                node.initializeGlobalTheta();
+                node.initializeGlobalPi();
+            }
+        }
+        x = new double[B];
+        y = new double[B];
+        u = new double[A];
+    }
+
+    /**
+     * Run Recursive LDA to initialize nodes in two levels.
+     */
+    protected void initializeModelStructureTwoLevels() {
         int rlda_burnin = 10;
         int rlda_maxiter = 100;
         int rlda_samplelag = 10;
@@ -692,13 +786,13 @@ public class SNHDPIdealPoint extends AbstractSampler {
             DirMult issueTopic = new DirMult(V, getBeta(1) * V,
                     rlda.getTopicWord(new int[]{kk}).getDistribution());
             Node issueNode = new Node(iter, kk, 1, true, issueTopic, root,
-                    SamplerUtils.getGaussian(mu, sigma));
+                    SamplerUtils.getGaussian(mu, getSigma(1)));
             root.addChild(kk, issueNode);
             for (int jj = 0; jj < Ks[1]; jj++) {
                 DirMult frameTopic = new DirMult(V, getBeta(2) * V,
                         rlda.getTopicWord(new int[]{kk, jj}).getDistribution());
                 Node frameNode = new Node(iter, jj, 2, false, frameTopic, issueNode,
-                        SamplerUtils.getGaussian(mu, sigma));
+                        SamplerUtils.getGaussian(mu, getSigma(2)));
                 issueNode.addChild(jj, frameNode);
             }
         }
@@ -744,7 +838,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
         if (verbose) {
             logln("--- Initializing random assignments ...");
         }
-        sampleZs(!REMOVE, ADD, !REMOVE, ADD, !OBSERVED, !EXTEND);
+        sampleZs(!REMOVE, ADD, !REMOVE, ADD, !OBSERVED, EXTEND);
 
         // remove empty nodes after initial assignments and update thetas
         Stack<Node> stack = new Stack<>();
@@ -804,15 +898,15 @@ public class SNHDPIdealPoint extends AbstractSampler {
             } else if (ii > 3 * A / 4) {
                 this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
             } else {
-                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
+                this.u[aa] = SamplerUtils.getGaussian(mu, ipSigma);
             }
         }
 
         this.x = new double[B];
         this.y = new double[B];
         for (int b = 0; b < B; b++) {
-            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
-            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
+            this.x[b] = SamplerUtils.getGaussian(mu, ipSigma);
+            this.y[b] = SamplerUtils.getGaussian(mu, ipSigma);
         }
     }
 
@@ -843,8 +937,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
 
         for (iter = 0; iter < MAX_ITER; iter++) {
             boolean isReporting = isReporting();
-            numTokensChanged = 0;
-            numTokensAccepted = 0;
             if (isReporting) {
                 double loglikelihood = this.getLogLikelihood();
                 logLikelihoods.add(loglikelihood);
@@ -873,7 +965,11 @@ public class SNHDPIdealPoint extends AbstractSampler {
                         + " (" + (double) numTokensChanged / numTokens + ")"
                         + ". # tokens accepted: " + numTokensAccepted
                         + " (" + (double) numTokensAccepted / numTokens + ")");
-                logln("\n" + printGlobalTree() + "\n\n");
+                if (debug) {
+                    logln("\n" + printGlobalTree() + "\n\n");
+                } else {
+                    logln("\n" + printGlobalTreeSummary() + "\n\n");
+                }
             }
 
             if (debug) {
@@ -915,7 +1011,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
             node.getContent().increment(words[dd][nn]);
         }
         if (addToData) {
-            authorMeans[authors[dd]] += node.eta / authorTokenCounts[authors[dd]];
+            if (authorMeans != null) { // don't update during test
+                authorMeans[authors[dd]] += node.eta / authorTokenCounts[authors[dd]];
+            }
             node.tokenCounts.increment(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -937,7 +1035,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
     private void removeToken(int dd, int nn, Node node,
             boolean removeFromData, boolean removeFromModel) {
         if (removeFromData) {
-            authorMeans[authors[dd]] -= node.eta / authorTokenCounts[authors[dd]];
+            if (authorMeans != null) { // don't update during test
+                authorMeans[authors[dd]] -= node.eta / authorTokenCounts[authors[dd]];
+            }
             node.tokenCounts.decrement(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -945,6 +1045,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 tempNode = tempNode.getParent();
             }
         }
+
         if (removeFromModel) {
             node.getContent().decrement(words[dd][nn]);
 
@@ -978,6 +1079,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
     protected long sampleZs(boolean removeFromModel, boolean addToModel,
             boolean removeFromData, boolean addToData, boolean observe,
             boolean extend) {
+        numTokensChanged = 0;
+        numTokensAccepted = 0;
         long sTime = System.currentTimeMillis();
         for (int dd = 0; dd < D; dd++) {
             for (int nn = 0; nn < words[dd].length; nn++) {
@@ -1009,18 +1112,31 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 }
 
                 if (accept) {
+                    if (z[dd][nn] != null && !z[dd][nn].equals(sampledNode)) {
+                        numTokensChanged++;
+                    }
                     z[dd][nn] = sampledNode;
-                    numTokensChanged++;
                 }
 
                 // add
                 addToken(dd, nn, z[dd][nn], addToData, addToModel);
 
-                // if a new node is sampled and accepted, change its status
-                // (not new node anymore) and udpate the global theta of its parent
-                if (sampledNode.newNode && accept) {
-                    sampledNode.changeStatus();
-                    sampledNode.getParent().updateGlobalThetaDebug();
+                Node parent = z[dd][nn].getParent();
+                int zIdx = z[dd][nn].getIndex();
+                if (accept) {
+                    // if a new node is sampled and accepted, change its status
+                    // (not new node anymore) and udpate the global theta of its parent
+                    if (z[dd][nn].newNode) {
+                        z[dd][nn].changeStatus();
+                        parent.updateGlobalTheta();
+                    }
+                } else {
+                    // if reject the proposed node and the current node is removed
+                    // from the tree, we need to add it back to the tree
+                    if (!z[dd][nn].isRoot() && !parent.hasChild(zIdx)) {
+                        parent.addChild(zIdx, z[dd][nn]);
+                        parent.updateGlobalTheta();
+                    }
                 }
             }
         }
@@ -1044,8 +1160,12 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
         double lAlpha = getLocalAlpha(level);
         double gammaScale = getGammaScale(level);
-        double stayprob = (curNode.tokenCounts.getCount(dd) + gammaScale * curNode.pi)
-                / (curNode.subtreeTokenCounts.getCount(dd) + gammaScale);
+
+        double stayprob = 0.0;
+        if (hasRootTopic || (!hasRootTopic && !curNode.isRoot())) {
+            stayprob = (curNode.tokenCounts.getCount(dd) + gammaScale * curNode.pi)
+                    / (curNode.subtreeTokenCounts.getCount(dd) + gammaScale);
+        }
         double passprob = 1.0 - stayprob;
 
         ArrayList<Node> nodeList = new ArrayList<>();
@@ -1083,7 +1203,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             int newChildIdx = curNode.getNextChildIndex();
             Node newChild = new Node(iter, newChildIdx, level + 1, false,
                     new DirMult(V, getBeta(level + 1) * V, 1.0 / V), curNode,
-                    SamplerUtils.getGaussian(mu, sigma));
+                    SamplerUtils.getGaussian(mu, getSigma(level + 1)));
             curNode.addChild(newChildIdx, newChild);
             return newChild;
         } else if (sampledNode.equals(curNode)) {
@@ -1121,8 +1241,16 @@ public class SNHDPIdealPoint extends AbstractSampler {
         return logprobs;
     }
 
-    private double[] getTransLogProbabilities(int dd, int nn, Node source,
-            Node target) {
+    /**
+     * Get the transition log probability of moving a token from a source node
+     * to a target node. The source node can be the same as the target node.
+     *
+     * @param dd
+     * @param nn
+     * @param source
+     * @param target
+     */
+    private double[] getTransLogProbabilities(int dd, int nn, Node source, Node target) {
         int level = source.getLevel();
         if (level == L - 1) { // leaf node
             if (!source.equals(target)) {
@@ -1259,13 +1387,15 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
 
         // current params
+        double[] nodeSigmas = new double[N];
         double[] etas = new double[N];
         for (int kk = 0; kk < N; kk++) {
             etas[kk] = nodeList.get(kk).eta;
+            nodeSigmas[kk] = getSigma(nodeList.get(kk).getLevel());
         }
 
         RidgeLinearRegressionLBFGS optimizable = new RidgeLinearRegressionLBFGS(
-                u, etas, designMatrix, rho, mu, sigma);
+                u, etas, designMatrix, rho, mu, nodeSigmas);
 
         LimitedMemoryBFGS optimizer = new LimitedMemoryBFGS(optimizable);
         boolean converged = false;
@@ -1309,6 +1439,11 @@ public class SNHDPIdealPoint extends AbstractSampler {
         return nodeList;
     }
 
+    /**
+     * Update the global thetas.
+     *
+     * @return Elapsed time
+     */
     private long updateThetas() {
         long sTime = System.currentTimeMillis();
         Stack<Node> stack = new Stack<>();
@@ -1351,7 +1486,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 }
             }
             // prior
-            grad -= (u[a] - authorMeans[a]) / sigma;
+            grad -= (u[a] - authorMeans[a]) / ipSigma;
             // update
             u[a] += epsilon * grad;
         }
@@ -1370,9 +1505,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 }
             }
             // prior
-            gradX -= (x[b] - mu) / sigma;
-            gradY -= (y[b] - mu) / sigma;
-
+            gradX -= (x[b] - mu) / ipSigma;
+            gradY -= (y[b] - mu) / ipSigma;
             // update
             x[b] += epsilon * gradX;
             y[b] += epsilon * gradY;
@@ -1538,7 +1672,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 SparseCount tokenCounts = SparseCount.input(reader.readLine());
                 SparseCount subtreeTokenCounts = SparseCount.input(reader.readLine());
                 line = reader.readLine().trim();
-                HashMap<Integer, Double> theta = null;
+                HashMap<Integer, Double> theta = new HashMap<>();
                 if (!line.isEmpty()) {
                     theta = stringToHashMap(line);
                 }
@@ -1573,6 +1707,10 @@ public class SNHDPIdealPoint extends AbstractSampler {
             e.printStackTrace();
             throw new RuntimeException("Exception while loading model from "
                     + zipFilepath);
+        }
+
+        if (verbose && debug) {
+            logln(printGlobalTree());
         }
     }
 
@@ -1901,44 +2039,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 int childIdx = child.getIndex();
                 for (int dd : child.subtreeTokenCounts.getIndices()) {
                     int rawCount = child.subtreeTokenCounts.getCount(dd);
-                    int approxCount = getApproxCount(rawCount, this.theta.get(childIdx));
-                    approxThetaCounts.changeCount(childIdx, approxCount);
-                }
-            }
-
-            // update theta
-            this.theta = new HashMap<>();
-            double norm = approxThetaCounts.getCountSum() + gAlpha;
-            for (int childIdx : approxThetaCounts.getIndices()) {
-                this.theta.put(childIdx,
-                        (double) approxThetaCounts.getCount(childIdx) / norm);
-            }
-            this.theta.put(NEW_CHILD_INDEX, gAlpha / norm);
-
-            // debug
-//            System.out.println("node = " + this.toString());
-//            for (Node child : getChildren()) {
-//                int childIdx = child.getIndex();
-//                System.out.println("--- " + child.toString()
-//                        + ". " + approxThetaCounts.getCount(childIdx)
-//                        + ". " + theta.get(childIdx));
-//            }
-//            System.out.println("--- " + theta.get(NEW_CHILD_INDEX));
-//            System.out.println();
-        }
-
-        void updateGlobalThetaDebug() {
-            if (!isExtensible()) {
-                return;
-            }
-            double gAlpha = getGlobalAlpha(level);
-
-            // update counts
-            SparseCount approxThetaCounts = new SparseCount();
-            for (Node child : getChildren()) {
-                int childIdx = child.getIndex();
-                for (int dd : child.subtreeTokenCounts.getIndices()) {
-                    int rawCount = child.subtreeTokenCounts.getCount(dd);
                     Double thetaVal = this.theta.get(childIdx);
                     if (thetaVal == null) { // this child has just been added
                         thetaVal = theta.get(NEW_CHILD_INDEX);
@@ -1956,17 +2056,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
                         (double) approxThetaCounts.getCount(childIdx) / norm);
             }
             this.theta.put(NEW_CHILD_INDEX, gAlpha / norm);
-
-            // debug
-            System.out.println("node = " + this.toString());
-            for (Node child : getChildren()) {
-                int childIdx = child.getIndex();
-                System.out.println("--- " + child.toString()
-                        + ". " + approxThetaCounts.getCount(childIdx)
-                        + ". " + theta.get(childIdx));
-            }
-            System.out.println("--- " + theta.get(NEW_CHILD_INDEX));
-            System.out.println();
         }
 
         /**
@@ -2085,7 +2174,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
         return table;
     }
-    
+
     /**
      * Run multiple test chains on test data in parallel and average to get the
      * final predictions.

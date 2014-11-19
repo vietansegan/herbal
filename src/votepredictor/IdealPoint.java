@@ -21,6 +21,8 @@ public class IdealPoint extends AbstractVotePredictor {
 
     protected int A; // number of authos
     protected int B; // number of bills
+    protected boolean[] validAs;
+    protected boolean[] validBs;
     // params
     protected double[] u; // A
     protected double[] x; // B
@@ -42,7 +44,7 @@ public class IdealPoint extends AbstractVotePredictor {
     protected int negAnchor;
     protected final double anchorMean = 3.0;
     protected final double anchorVar = 0.01;
-    
+
     public IdealPoint() {
         this.name = "ideal-point";
     }
@@ -141,6 +143,17 @@ public class IdealPoint extends AbstractVotePredictor {
                 int bb = this.billIndices.get(jj);
                 this.votes[ii][jj] = votes[aa][bb];
                 this.mask[ii][jj] = trainVotes[aa][bb];
+            }
+        }
+
+        this.validAs = new boolean[A];
+        this.validBs = new boolean[B];
+        for (int aa = 0; aa < A; aa++) {
+            for (int bb = 0; bb < B; bb++) {
+                if (mask[aa][bb]) {
+                    this.validAs[aa] = true;
+                    this.validBs[bb] = true;
+                }
             }
         }
     }
@@ -268,7 +281,7 @@ public class IdealPoint extends AbstractVotePredictor {
             }
         }
         return predictions;
-    }    
+    }
 
     @Override
     public void output(File modelFile) {

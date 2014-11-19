@@ -439,7 +439,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         if (predictionFile != null) {
             AbstractVotePredictor.outputPredictions(predictionFile, null, predictions);
         }
-
+        
         return predictions;
     }
 

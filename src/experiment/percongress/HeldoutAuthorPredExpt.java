@@ -15,15 +15,19 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.Random;
 import org.apache.commons.cli.ParseException;
+import sampling.likelihood.CascadeDirMult.PathAssumption;
 import sampling.util.SparseCount;
 import util.CLIUtils;
 import util.IOUtils;
 import util.SparseVector;
+import util.govtrack.GTLegislator;
 import votepredictor.AbstractVotePredictor;
+import votepredictor.SNLDAIdealPoint;
 import votepredictor.baselines.AuthorTFIDFNN;
 import votepredictor.baselines.AuthorTFNN;
 import votepredictor.baselines.LogisticRegression;
 import votepredictor.baselines.LogisticRegression.OptType;
+import votepredictor.baselines.LogisticRegression.NormalizeType;
 
 /**
  *
@@ -102,6 +106,9 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "snlda-ideal-point":
                 runSNLDAIdealPoint(outputFolder);
                 break;
+            case "snlda-mult-ideal-point":
+                runSNLDAMultIdealPoint(outputFolder);
+                break;
             case "snhdp-ideal-point":
                 runSNHDPIdealPoint(outputFolder);
                 break;
@@ -118,19 +125,96 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             logln("--- --- Running logistic regressors ...");
         }
 
+        StringBuilder basename = new StringBuilder("logreg");
+
+        if (cmd.hasOption("party")) {
+            basename.append("-party");
+        }
+
+        SNLDAIdealPoint sampler = new SNLDAIdealPoint();
+        if (cmd.hasOption("snlda")) {
+            basename.append("-snlda");
+
+            double[][] issuePhis = estimateIssues();
+            int J = 3;
+            double[] alphas = new double[]{0.1, 0.1};
+            double[] betas = new double[]{1.0, 0.5, 0.1};
+            double[] gamma_means = new double[]{0.2, 0.2};
+            double[] gamma_scales = new double[]{100, 10};
+            double mu = 0.0;
+            double sigma = 2.5;
+            double rho = 0.5;
+            boolean hasRootTopic = false;
+
+            sampler.setVerbose(verbose);
+            sampler.setDebug(debug);
+            sampler.setLog(true);
+            sampler.setReport(true);
+            sampler.setWordVocab(debateVoteData.getWordVocab());
+            sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+            sampler.setLabelVocab(billData.getTopicVocab());
+
+            PathAssumption pathAssumption = PathAssumption.MAXIMAL;
+            String path = CLIUtils.getStringArgument(cmd, "path", "max");
+            switch (path) {
+                case "max":
+                    pathAssumption = PathAssumption.MAXIMAL;
+                    break;
+                case "min":
+                    pathAssumption = PathAssumption.MINIMAL;
+                    break;
+                default:
+                    throw new RuntimeException("Path assumption " + path + " not supported");
+            }
+
+            sampler.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), J,
+                    issuePhis, alphas, betas, gamma_means, gamma_scales,
+                    rho, mu, sigma, hasRootTopic,
+                    initState, pathAssumption, paramOpt,
+                    burn_in, max_iters, sample_lag, report_interval);
+            sampler.inputModel(sampler.getFinalStateFile().getAbsolutePath());
+        }
+
         String optTypeStr = CLIUtils.getStringArgument(cmd, "opt-type", "lbfgs");
-        LogisticRegression lr = new LogisticRegression("logreg");
+        String normTypeStr = CLIUtils.getStringArgument(cmd, "norm-type", "minmax");
+        LogisticRegression lr = new LogisticRegression(basename.toString());
+        String params = CLIUtils.getStringArgument(cmd, "params", "0.0,0.1");
+        String[] sparams = params.split(",");
+        NormalizeType normType = NormalizeType.MINMAX;
+            switch (normTypeStr) {
+            case "minmax":
+                normType = NormalizeType.MINMAX;
+                break;
+            case "zscore":
+                normType = NormalizeType.ZSCORE;
+                break;
+            case "none":
+                normType = NormalizeType.NONE;
+                break;
+            default:
+                throw new RuntimeException("Normalization type " + normTypeStr
+                        + " is not supported");
+        }
+        
         switch (optTypeStr) {
             case "lbfgs":
-                double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
-                double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 1.0);
+                double mu = Double.parseDouble(sparams[0]);
+                double sigma = Double.parseDouble(sparams[1]);
                 lr.configure(debateVoteData.getWordVocab().size(), OptType.LBFGS,
-                        mu, sigma);
+                        normType, mu, sigma);
                 break;
             case "owlqn":
-                double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.5);
-                double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 0.5);
-                lr.configure(debateVoteData.getWordVocab().size(), OptType.OWLQN, l1, l2);
+                double l1 = Double.parseDouble(sparams[0]);
+                double l2 = Double.parseDouble(sparams[1]);
+                lr.configure(debateVoteData.getWordVocab().size(), OptType.OWLQN, 
+                        normType, l1, l2);
+                break;
+            case "liblinear":
+                double c = Double.parseDouble(sparams[0]);
+                double epsilon = Double.parseDouble(sparams[1]);
+                lr.configure(debateVoteData.getWordVocab().size(), OptType.LIBLINEAR, 
+                        normType, c, epsilon);
                 break;
             default:
                 throw new RuntimeException("OptType " + optTypeStr + " not supported");
@@ -139,25 +223,108 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         IOUtils.createFolder(predFolder);
 
         if (cmd.hasOption("train")) {
+            ArrayList<SparseVector[]> addFeatures = new ArrayList<>();
+            ArrayList<Integer> numFeatures = new ArrayList<>();
+
+            if (cmd.hasOption("party")) {
+                SparseVector[] authorParties = new SparseVector[trainAuthorIndices.size()];
+                for (int aa = 0; aa < trainAuthorIndices.size(); aa++) {
+                    authorParties[aa] = new SparseVector(2);
+                    int author = trainAuthorIndices.get(aa);
+                    String authorId = debateVoteData.getAuthorVocab().get(author);
+                    String authorParty = debateVoteData.getAuthorProperty(authorId, GTLegislator.PARTY);
+                    switch (authorParty) {
+                        case "Republican":
+                            authorParties[aa].set(0, 1.0);
+                            break;
+                        case "Democrat":
+                            authorParties[aa].set(1, 1.0);
+                            break;
+                    }
+                }
+                addFeatures.add(authorParties);
+                numFeatures.add(2);
+            }
+
+            if (cmd.hasOption("snlda")) {
+                sampler.train(trainDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        votes, trainAuthorIndices, trainBillIndices,
+                        trainVotes);
+                sampler.inputAssignments(sampler.getFinalStateFile().getAbsolutePath());
+                SparseVector[] authorFeatures = sampler.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
+
             lr.train(trainDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
                     votes,
                     trainAuthorIndices,
                     trainBillIndices,
-                    trainVotes);
-            lr.output(new File(predFolder, MODEL_FILE));
+                    trainVotes,
+                    addFeatures, numFeatures);
+            if (lr.getOptType() == OptType.LIBLINEAR) {
+                File liblinearFolder = new File(predFolder, "liblinear");
+                IOUtils.createFolder(liblinearFolder);
+                lr.output(liblinearFolder);
+            } else {
+                lr.output(new File(predFolder, MODEL_FILE));
+            }
         }
 
         if (cmd.hasOption("testauthor")) {
-            lr.input(new File(predFolder, MODEL_FILE));
+            ArrayList<SparseVector[]> addFeatures = new ArrayList<>();
+            ArrayList<Integer> numFeatures = new ArrayList<>();
 
+            if (cmd.hasOption("party")) {
+                SparseVector[] authorParties = new SparseVector[testAuthorIndices.size()];
+                for (int aa = 0; aa < testAuthorIndices.size(); aa++) {
+                    authorParties[aa] = new SparseVector(2);
+                    int author = testAuthorIndices.get(aa);
+                    String authorId = debateVoteData.getAuthorVocab().get(author);
+                    String authorParty = debateVoteData.getAuthorProperty(authorId, GTLegislator.PARTY);
+                    switch (authorParty) {
+                        case "Republican":
+                            authorParties[aa].set(0, 1.0);
+                            break;
+                        case "Democrat":
+                            authorParties[aa].set(1, 1.0);
+                            break;
+                    }
+                }
+                addFeatures.add(authorParties);
+                numFeatures.add(2);
+            }
+
+            if (cmd.hasOption("snlda")) {
+                File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
+                sampler.test(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        testAuthorIndices,
+                        testVotes);
+                sampler.inputAssignments(new File(samplerFolder,
+                        TEST_PREFIX + "assignments.zip").getAbsolutePath());
+                SparseVector[] authorFeatures = sampler.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
+
+            if (lr.getOptType() == OptType.LIBLINEAR) {
+                File liblinearFolder = new File(predFolder, "liblinear");
+                lr.input(liblinearFolder);
+            } else {
+                lr.input(new File(predFolder, MODEL_FILE));
+            }
             SparseVector[] predictions = lr.test(
                     testDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
                     testAuthorIndices,
-                    testVotes);
+                    testVotes, addFeatures, numFeatures);
             File teResultFolder = new File(predFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
@@ -170,7 +337,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             logln("--- --- Running author TF-NN ...");
         }
         int K = CLIUtils.getIntegerArgument(cmd, "K", 5);
-        AuthorTFNN pred = new AuthorTFNN("author-tf");
+        AuthorTFNN pred = new AuthorTFNN("author-tf-K_" + K);
         pred.configure(debateVoteData.getWordVocab().size());
         File predFolder = new File(outputFolder, pred.getName());
         IOUtils.createFolder(predFolder);
@@ -207,7 +374,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             logln("--- --- Running author TF-IDF-NN ...");
         }
         int K = CLIUtils.getIntegerArgument(cmd, "K", 5);
-        AuthorTFIDFNN pred = new AuthorTFIDFNN("author-tf-idf");
+        AuthorTFIDFNN pred = new AuthorTFIDFNN("author-tf-idf-K_" + K);
         pred.configure(debateVoteData.getWordVocab().size());
         File predFolder = new File(outputFolder, pred.getName());
         IOUtils.createFolder(predFolder);
