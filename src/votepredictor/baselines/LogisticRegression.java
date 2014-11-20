@@ -24,6 +24,8 @@ import util.SamplerUtils;
 import util.SparseVector;
 import util.StatUtils;
 import util.normalizer.AbstractNormalizer;
+import util.normalizer.MinMaxNormalizer;
+import util.normalizer.ZNormalizer;
 import votepredictor.AbstractVotePredictor;
 
 /**
@@ -67,7 +69,7 @@ public class LogisticRegression extends AbstractVotePredictor {
     protected SparseVector[] authorVectors;                 // A
     protected HashMap<Integer, Integer>[] authorVoteMap;    // A
 
-    protected HashMap<Integer, double[]> weights; // B * V
+    protected HashMap<Integer, double[]> weights; // [B] * [number of features]
     protected AbstractNormalizer[] normalizers;
 
     public LogisticRegression() {
@@ -129,6 +131,10 @@ public class LogisticRegression extends AbstractVotePredictor {
             throw new RuntimeException("Optimization type " + optType + " not supported");
         }
         return configName;
+    }
+
+    public HashMap<Integer, double[]> getWeights() {
+        return this.weights;
     }
 
     /**
@@ -244,7 +250,6 @@ public class LogisticRegression extends AbstractVotePredictor {
             }
         }
 
-//        normalizers = StatUtils.minmaxNormalizeTrainingData(authorVectors, V + totalF);
         if (normType == NormalizeType.MINMAX) {
             normalizers = StatUtils.minmaxNormalizeTrainingData(authorVectors, V + totalF);
         } else if (normType == NormalizeType.ZSCORE) {
@@ -524,6 +529,21 @@ public class LogisticRegression extends AbstractVotePredictor {
                     }
                     this.weights.put(bill, ws);
                 }
+
+                if (normType != NormalizeType.NONE) {
+                    int numFeatures = Integer.parseInt(reader.readLine());
+                    this.normalizers = new AbstractNormalizer[numFeatures];
+                    for (int ff = 0; ff < numFeatures; ff++) {
+                        if (normType == NormalizeType.MINMAX) {
+                            normalizers[ff] = MinMaxNormalizer.input(reader.readLine());
+                        } else if (normType == NormalizeType.ZSCORE) {
+                            normalizers[ff] = ZNormalizer.input(reader.readLine());
+                        } else {
+                            throw new RuntimeException("Normalization type " + normType
+                                    + " is not supported");
+                        }
+                    }
+                }
                 reader.close();
             }
         } catch (IOException | NumberFormatException e) {
@@ -549,6 +569,20 @@ public class LogisticRegression extends AbstractVotePredictor {
                         writer.write(bb + "\tnull\n");
                     } else {
                         writer.write(bb + "\t" + MiscUtils.arrayToString(this.weights.get(bb)) + "\n");
+                    }
+                }
+
+                if (normType != NormalizeType.NONE) {
+                    writer.write(normalizers.length + "\n");
+                    for (AbstractNormalizer normalizer : normalizers) {
+                        if (normType == NormalizeType.MINMAX) {
+                            writer.write(MinMaxNormalizer.output((MinMaxNormalizer) normalizer) + "\n");
+                        } else if (normType == NormalizeType.ZSCORE) {
+                            writer.write(ZNormalizer.output((ZNormalizer) normalizer) + "\n");
+                        } else {
+                            throw new RuntimeException("Normalization type " + normType
+                                    + " is not supported");
+                        }
                     }
                 }
                 writer.close();

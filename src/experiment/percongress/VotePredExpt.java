@@ -1387,7 +1387,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 new double[]{0.0, 1.0, 2.5}, ",");
         double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
         double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
-        double l2 = CLIUtils.getDoubleArgument(cmd, "l1", 1.0);
+        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 1.0);
         boolean hasRootTopic = cmd.hasOption("roottopic");
 
         SNLDAMultIdealPoint sampler = new SNLDAMultIdealPoint();
@@ -1517,6 +1517,15 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         testVotes,
                         null, null, null,
                         new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
+                
+//                predictions = sampler.test(null,
+//                        testDebateIndices,
+//                        debateVoteData.getWords(),
+//                        debateVoteData.getAuthors(),
+//                        testAuthorIndices,
+//                        testVotes,
+//                        null, null, null);
+                
 //                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
 //                        debateVoteData.getAuthorVocab(),
 //                        testAuthorIndices,
