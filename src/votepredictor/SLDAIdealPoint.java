@@ -1107,7 +1107,6 @@ public class SLDAIdealPoint extends AbstractSampler {
 
         try {
             inputModel(filepath);
-
             inputAssignments(filepath);
         } catch (Exception e) {
             e.printStackTrace();

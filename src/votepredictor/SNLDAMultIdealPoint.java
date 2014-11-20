@@ -83,7 +83,6 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     protected ArrayList<String> authorVocab;
     protected ArrayList<String> voteVocab;
     protected ArrayList<String> labelVocab;
-    protected boolean isReporting;
 
     public SNLDAMultIdealPoint() {
         this.basename = "SNLDA-mult-ideal-point";
@@ -459,32 +458,31 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         }
     }
 
-    public SparseVector[] test(File stateFile,
-            ArrayList<Integer> docIndices,
-            int[][] words,
-            int[] authors,
-            ArrayList<Integer> authorIndices,
-            boolean[][] testVotes,
-            File predictionFile,
-            File partAuthorScoreFile,
-            File partVoteScoreFile) {
-
-        this.setupData(docIndices, words, authors, null, authorIndices, null, testVotes);
-
-        SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < A; aa++) {
-            int author = this.authorIndices.get(aa);
-            predictions[author] = new SparseVector(testVotes[author].length);
-            for (int bb = 0; bb < testVotes[author].length; bb++) {
-                if (isValidVote(aa, bb)) {
-                    double val = Math.exp(authorLexDsgMatrix[aa].dotProduct(lexicalParams[bb]));
-                    predictions[author].set(bb, val / (1.0 + val));
-                }
-            }
-        }
-        return predictions;
-    }
-
+//    public SparseVector[] test(File stateFile,
+//            ArrayList<Integer> docIndices,
+//            int[][] words,
+//            int[] authors,
+//            ArrayList<Integer> authorIndices,
+//            boolean[][] testVotes,
+//            File predictionFile,
+//            File partAuthorScoreFile,
+//            File partVoteScoreFile) {
+//
+//        this.setupData(docIndices, words, authors, null, authorIndices, null, testVotes);
+//
+//        SparseVector[] predictions = new SparseVector[testVotes.length];
+//        for (int aa = 0; aa < A; aa++) {
+//            int author = this.authorIndices.get(aa);
+//            predictions[author] = new SparseVector(testVotes[author].length);
+//            for (int bb = 0; bb < testVotes[author].length; bb++) {
+//                if (isValidVote(aa, bb)) {
+//                    double val = Math.exp(authorLexDsgMatrix[aa].dotProduct(lexicalParams[bb]));
+//                    predictions[author].set(bb, val / (1.0 + val));
+//                }
+//            }
+//        }
+//        return predictions;
+//    }
     /**
      * Make prediction for held-out voters using their text using the final
      * learned model. This can only make predictions on existing bills, so no
@@ -525,14 +523,13 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             logln("--- state file: " + stateFile);
         }
 
-//        this.setTestConfigurations(100, 250, 10, 5);
-        this.setTestConfigurations(5, 10, 5, 5);
+        setTestConfigurations(100, 250, 10, 5);
 
         // set up test data
-        this.setupData(docIndices, words, authors, null, authorIndices, null, testVotes);
+        setupData(docIndices, words, authors, null, authorIndices, null, testVotes);
 
         // sample assignments for new documents
-        this.sampleNewDocuments(getFinalStateFile(), assignmentFile);
+        sampleNewDocuments(getFinalStateFile(), assignmentFile);
 
         SparseVector[] predictions = makePredictions();
 
@@ -572,6 +569,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 }
             }
         }
+
         return predictions;
     }
 
@@ -641,9 +639,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 logln("--- --- Time. Topic: " + topicTime);
                 logln("--- --- # tokens: " + numTokens
                         + ". # tokens changed: " + numTokensChanged
-                        + " (" + (double) numTokensChanged / numTokens + ")"
+                        + " (" + MiscUtils.formatDouble((double) numTokensChanged / numTokens) + ")"
                         + ". # tokens accepted: " + numTokensAccepted
-                        + " (" + (double) numTokensAccepted / numTokens + ")"
+                        + " (" + MiscUtils.formatDouble((double) numTokensAccepted / numTokens) + ")"
                         + "\n\n");
             }
         }
@@ -814,6 +812,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         for (int d = 0; d < D; d++) {
             z[d] = new Node[words[d].length];
         }
+
         this.authorIssueScores = new SparseVector[A];
         for (int aa = 0; aa < A; aa++) {
             this.authorIssueScores[aa] = new SparseVector(K);
@@ -998,6 +997,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 // remove
                 removeToken(dd, nn, z[dd][nn], removeFromData, removeFromModel);
 
+                // propose a node
                 Node sampledNode = sampleNode(dd, nn, root);
                 boolean accept = false;
                 if (z[dd][nn] == null) {
@@ -1033,9 +1033,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             logln("--- --- time: " + eTime);
             logln("--- --- # tokens: " + numTokens
                     + ". # tokens changed: " + numTokensChanged
-                    + " (" + (double) numTokensChanged / numTokens + ")"
+                    + " (" + MiscUtils.formatDouble((double) numTokensChanged / numTokens) + ")"
                     + ". # tokens accepted: " + numTokensAccepted
-                    + " (" + (double) numTokensAccepted / numTokens + ")");
+                    + " (" + MiscUtils.formatDouble((double) numTokensAccepted / numTokens) + ")");
         }
         return eTime;
     }
@@ -1201,7 +1201,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 resLlh += getVote(aa, bb) * dotprod - Math.log(1 + Math.exp(dotprod));
             }
         }
-        return resLlh;
+        return resLlh / B;
     }
 
     /**
@@ -1213,8 +1213,8 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         if (isReporting) {
             logln("+++ Updating etas ...");
         }
-
         long sTime = System.currentTimeMillis();
+
         ArrayList<Node> nodeList = getNodeList();
         double[] etas = new double[nodeList.size()];
         for (int ii = 0; ii < etas.length; ii++) {
@@ -1229,12 +1229,11 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         for (int ii = 0; ii < etas.length; ii++) {
             nodeList.get(ii).eta = etas[ii];
         }
-        long eTime = System.currentTimeMillis() - sTime;
 
+        long eTime = System.currentTimeMillis() - sTime;
         if (isReporting) {
             logln("--- --- time: " + eTime);
         }
-
         return eTime;
     }
 
@@ -1247,8 +1246,8 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         if (isReporting) {
             logln("+++ Updating XYs ...");
         }
-
         long sTime = System.currentTimeMillis();
+
         for (int bb = 0; bb < B; bb++) {
             if (!this.validBs[bb]) {
                 continue;
@@ -1259,6 +1258,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             XYDiffFunc xydiff = new XYDiffFunc(bb);
             minimizer.minimize(xydiff, xy[bb], 0.0);
         }
+
         long eTime = System.currentTimeMillis() - sTime;
         if (isReporting) {
             logln("--- --- time: " + eTime);
@@ -1313,8 +1313,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                     if (lexReg) {
                         dotprod += this.authorBillLexicalScores[aa].get(bb);
                     }
-                    double score = Math.exp(dotprod);
-                    llh += getVote(aa, bb) * score - Math.log(1 + Math.exp(score));
+                    llh += getVote(aa, bb) * dotprod - Math.log(1 + Math.exp(dotprod));
                 }
             }
         }
@@ -1481,7 +1480,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             inputModel(filepath);
             inputBillScore(filepath);
             inputAssignments(filepath);
-            inputLexicalParameters(filepath);
+            if (lexReg) {
+                inputLexicalParameters(filepath);
+            }
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Exception while inputing from " + filepath);
@@ -1902,6 +1903,45 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             throw new RuntimeException("Exception while outputing topics "
                     + outputFile);
         }
+    }
+
+    public SparseVector[] getAuthorFeatures() {
+        ArrayList<Node> nodeList = getNodeList();
+        int N = nodeList.size();
+
+        // get author node proportions
+        SparseVector[] authorNodeProps = new SparseVector[A];
+        for (int aa = 0; aa < A; aa++) {
+            authorNodeProps[aa] = new SparseVector(N);
+        }
+        for (int dd = 0; dd < z.length; dd++) {
+            int aa = authors[dd];
+            for (Node item : z[dd]) {
+                int nodeIdx = nodeList.indexOf(item);
+                authorNodeProps[aa].change(nodeIdx, 1.0);
+            }
+        }
+        for (int aa = 0; aa < A; aa++) {
+            authorNodeProps[aa].scale(1.0 / authorTokenCounts[aa]);
+        }
+
+        // get author features
+        SparseVector[] authorFeatures = new SparseVector[A];
+        for (int aa = 0; aa < A; aa++) {
+            authorFeatures[aa] = new SparseVector(2 * N + 1);
+        }
+        for (int aa = 0; aa < A; aa++) {
+            double idealPoint = 0.0;
+            for (int kk = 0; kk < N; kk++) {
+                double val = authorNodeProps[aa].get(kk) * nodeList.get(kk).eta;
+                idealPoint += val;
+                authorFeatures[aa].set(kk, authorNodeProps[aa].get(kk));
+                authorFeatures[aa].set(N + kk, val);
+            }
+            authorFeatures[aa].set(2 * N, idealPoint);
+        }
+
+        return authorFeatures;
     }
 
     class LexicalDiffFunc implements DiffFunction {

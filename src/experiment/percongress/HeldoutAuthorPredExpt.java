@@ -103,6 +103,9 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "slda-ideal-point":
                 runSLDAIdealPoint(outputFolder);
                 break;
+            case "slda-mult-ideal-point":
+                runSLDAMultIdealPoint(outputFolder);
+                break;
             case "snlda-ideal-point":
                 runSNLDAIdealPoint(outputFolder);
                 break;
@@ -182,7 +185,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         String params = CLIUtils.getStringArgument(cmd, "params", "0.0,0.1");
         String[] sparams = params.split(",");
         NormalizeType normType = NormalizeType.MINMAX;
-            switch (normTypeStr) {
+        switch (normTypeStr) {
             case "minmax":
                 normType = NormalizeType.MINMAX;
                 break;
@@ -196,7 +199,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 throw new RuntimeException("Normalization type " + normTypeStr
                         + " is not supported");
         }
-        
+
         switch (optTypeStr) {
             case "lbfgs":
                 double mu = Double.parseDouble(sparams[0]);
@@ -207,13 +210,13 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "owlqn":
                 double l1 = Double.parseDouble(sparams[0]);
                 double l2 = Double.parseDouble(sparams[1]);
-                lr.configure(debateVoteData.getWordVocab().size(), OptType.OWLQN, 
+                lr.configure(debateVoteData.getWordVocab().size(), OptType.OWLQN,
                         normType, l1, l2);
                 break;
             case "liblinear":
                 double c = Double.parseDouble(sparams[0]);
                 double epsilon = Double.parseDouble(sparams[1]);
-                lr.configure(debateVoteData.getWordVocab().size(), OptType.LIBLINEAR, 
+                lr.configure(debateVoteData.getWordVocab().size(), OptType.LIBLINEAR,
                         normType, c, epsilon);
                 break;
             default:
