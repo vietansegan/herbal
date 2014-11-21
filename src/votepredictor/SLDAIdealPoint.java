@@ -20,6 +20,7 @@ import util.RankingItem;
 import util.SamplerUtils;
 import util.SparseVector;
 import util.StatUtils;
+import util.evaluation.Measurement;
 
 /**
  *
@@ -204,6 +205,14 @@ public class SLDAIdealPoint extends AbstractSampler {
         return this.authorMeans;
     }
 
+    private int getVote(int aa, int bb) {
+        return this.votes[this.authorIndices.get(aa)][this.billIndices.get(bb)];
+    }
+
+    private boolean isValidVote(int aa, int bb) {
+        return this.validVotes[this.authorIndices.get(aa)][this.billIndices.get(bb)];
+    }
+
     @Override
     public String getCurrentState() {
         StringBuilder str = new StringBuilder();
@@ -287,16 +296,8 @@ public class SLDAIdealPoint extends AbstractSampler {
         }
         this.B = this.billIndices.size();
 
-        this.votes = new int[A][B];
-        this.validVotes = new boolean[A][B];
-        for (int ii = 0; ii < A; ii++) {
-            int aa = this.authorIndices.get(ii);
-            for (int jj = 0; jj < B; jj++) {
-                int bb = this.billIndices.get(jj);
-                this.votes[ii][jj] = votes[aa][bb];
-                this.validVotes[ii][jj] = trainVotes[aa][bb];
-            }
-        }
+        this.votes = votes;
+        this.validVotes = trainVotes;
 
         this.docIndices = docIndices;
         if (this.docIndices == null) { // add all documents
@@ -342,19 +343,33 @@ public class SLDAIdealPoint extends AbstractSampler {
      * @param testVotes Indicators of test votes
      * @return Predicted probabilities
      */
-    public SparseVector[] test(boolean[][] testVotes) {
+    public SparseVector[] predict(boolean[][] testVotes) {
         SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < predictions.length; aa++) {
-            predictions[aa] = new SparseVector();
-            for (int bb = 0; bb < testVotes[aa].length; bb++) {
-                if (testVotes[aa][bb]) {
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(testVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = billIndices.get(bb);
+                if (testVotes[author][bill]) {
                     double score = Math.exp(u[aa] * x[bb] + y[bb]);
-                    double val = score / (1 + score);
-                    predictions[aa].set(bb, val);
+                    double prob = score / (1.0 + score);
+                    predictions[author].set(bill, prob);
                 }
             }
         }
         return predictions;
+    }
+
+    /**
+     * Evaluate prediction during training.
+     */
+    private void evaluate() {
+        SparseVector[] predictions = predict(validVotes);
+        ArrayList<Measurement> measurements = AbstractVotePredictor
+                .evaluate(votes, validVotes, predictions);
+        for (Measurement m : measurements) {
+            logln(">>> >>> " + m.getName() + ": " + m.getValue());
+        }
     }
 
     /**
@@ -439,7 +454,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         if (predictionFile != null) {
             AbstractVotePredictor.outputPredictions(predictionFile, null, predictions);
         }
-        
+
         return predictions;
     }
 
@@ -657,10 +672,10 @@ public class SLDAIdealPoint extends AbstractSampler {
             int withCount = 0;
             int againstCount = 0;
             for (int bb = 0; bb < B; bb++) {
-                if (validVotes[aa][bb]) {
-                    if (votes[aa][bb] == Vote.WITH) {
+                if (isValidVote(aa, bb)) {
+                    if (getVote(aa, bb) == Vote.WITH) {
                         withCount++;
-                    } else if (votes[aa][bb] == Vote.AGAINST) {
+                    } else if (getVote(aa, bb) == Vote.AGAINST) {
                         againstCount++;
                     }
                 }
@@ -736,7 +751,8 @@ public class SLDAIdealPoint extends AbstractSampler {
         startTime = System.currentTimeMillis();
 
         for (iter = 0; iter < MAX_ITER; iter++) {
-            if (isReporting()) {
+            isReporting = isLogging();
+            if (isReporting) {
                 double loglikelihood = this.getLogLikelihood();
                 logLikelihoods.add(loglikelihood);
                 String str = "\n\nIter " + iter + "/" + MAX_ITER
@@ -751,6 +767,7 @@ public class SLDAIdealPoint extends AbstractSampler {
                         + MiscUtils.formatDouble(u[posAnchor])
                         + ". negative anchor (" + negAnchor + "): "
                         + MiscUtils.formatDouble(u[negAnchor]));
+                evaluate();
             }
 
             // sample topic assignments
@@ -780,7 +797,7 @@ public class SLDAIdealPoint extends AbstractSampler {
                 }
             }
 
-            if (isReporting()) {
+            if (isReporting) {
                 logln("--- --- Time. Topic: " + topicTime
                         + ". Eta: " + etaTime
                         + ". XY: " + uxyTime);
@@ -951,40 +968,40 @@ public class SLDAIdealPoint extends AbstractSampler {
 
     private void updateUs() {
         double aRate = getLearningRate();
-        for (int a = 0; a < A; a++) {
+        for (int aa = 0; aa < A; aa++) {
             double grad = 0.0;
-            for (int b = 0; b < votes[a].length; b++) { // likelihood
-                if (validVotes[a][b]) {
-                    double score = Math.exp(u[a] * x[b] + y[b]);
+            for (int bb = 0; bb < B; bb++) { // likelihood
+                if (isValidVote(aa, bb)) {
+                    double score = Math.exp(u[aa] * x[bb] + y[bb]);
                     double prob = score / (1 + score);
-                    grad += x[b] * (votes[a][b] - prob); // only work for 0 and 1
+                    grad += x[bb] * (getVote(aa, bb) - prob); // only work for 0 and 1
                 }
             }
-            grad -= (u[a] - authorMeans[a]) / sigma; // prior
-            u[a] += aRate * grad; // update
+            grad -= (u[aa] - authorMeans[aa]) / sigma; // prior
+            u[aa] += aRate * grad; // update
         }
     }
 
     public void updateXYs() {
         double bRate = getLearningRate();
-        for (int b = 0; b < B; b++) {
+        for (int bb = 0; bb < B; bb++) {
             double gradX = 0.0;
             double gradY = 0.0;
             // likelihood
-            for (int a = 0; a < A; a++) {
-                if (validVotes[a][b]) {
-                    double score = Math.exp(u[a] * x[b] + y[b]);
-                    gradX += u[a] * (votes[a][b] - score / (1 + score));
-                    gradY += votes[a][b] - score / (1 + score);
+            for (int aa = 0; aa < A; aa++) {
+                if (isValidVote(aa, bb)) {
+                    double score = Math.exp(u[aa] * x[bb] + y[bb]);
+                    gradX += u[aa] * (getVote(aa, bb) - score / (1 + score));
+                    gradY += getVote(aa, bb) - score / (1 + score);
                 }
             }
             // prior
-            gradX -= (x[b] - mu) / sigma;
-            gradY -= (y[b] - mu) / sigma;
+            gradX -= (x[bb] - mu) / sigma;
+            gradY -= (y[bb] - mu) / sigma;
 
             // update
-            x[b] += bRate * gradX;
-            y[b] += bRate * gradY;
+            x[bb] += bRate * gradX;
+            y[bb] += bRate * gradY;
         }
     }
 
@@ -1000,12 +1017,12 @@ public class SLDAIdealPoint extends AbstractSampler {
         return voteLlh;
     }
 
-    private double computeAuthorVoteLogLikelihood(int author, double authorVal) {
+    private double computeAuthorVoteLogLikelihood(int aa, double authorVal) {
         double llh = 0.0;
-        for (int b = 0; b < B; b++) {
-            if (validVotes[author][b]) {
-                double score = authorVal * x[b] + y[b];
-                llh += votes[author][b] * score - Math.log(1 + Math.exp(score));
+        for (int bb = 0; bb < B; bb++) {
+            if (isValidVote(aa, bb)) {
+                double score = authorVal * x[bb] + y[bb];
+                llh += getVote(aa, bb) * score - Math.log(1 + Math.exp(score));
             }
         }
         return llh;
@@ -1290,9 +1307,9 @@ public class SLDAIdealPoint extends AbstractSampler {
                 }
 
                 for (int b = 0; b < B; b++) {
-                    if (validVotes[a][b]) {
+                    if (isValidVote(a, b)) {
                         double score = voteXs[b] * dotprod + voteYs[b];
-                        val += votes[a][b] * score - Math.log(1 + Math.exp(score));
+                        val += getVote(a, b) * score - Math.log(1 + Math.exp(score));
                     }
                 }
             }
@@ -1308,11 +1325,11 @@ public class SLDAIdealPoint extends AbstractSampler {
                     dotprod += params[k] * authorZs[a][k];
                 }
                 for (int b = 0; b < B; b++) {
-                    if (validVotes[a][b]) {
+                    if (isValidVote(a, b)) {
                         double score = Math.exp(voteXs[b] * dotprod + voteYs[b]);
                         for (int k = 0; k < K; k++) {
                             gradient[k] += voteXs[b] * authorZs[a][k]
-                                    * (votes[a][b] - score / (1 + score));
+                                    * (getVote(a, b) - score / (1 + score));
                         }
                     }
                 }

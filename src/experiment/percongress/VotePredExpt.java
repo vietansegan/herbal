@@ -1083,6 +1083,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     trainBillIndices,
                     sampler.getXs(), sampler.getYs(),
                     debateVoteData.getVoteTable());
+
+            File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(trResultFolder);
+            SparseVector[] predictions = sampler.predict(trainVotes);
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
         }
 
         if (cmd.hasOption("testvote")) { // average over multiple test chains
@@ -1095,7 +1103,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     continue;
                 }
                 sampler.inputState(new File(reportFolder, file));
-                SparseVector[] partPreds = sampler.test(testVotes);
+                SparseVector[] partPreds = sampler.predict(testVotes);
                 if (predictions == null) {
                     predictions = partPreds;
                 } else {
@@ -1172,12 +1180,10 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
         double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
         double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
-        double rho = CLIUtils.getDoubleArgument(cmd, "mu", 1.0);
-        double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
-        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
-        double ipSigma = sigma;
+        double etaL2 = CLIUtils.getDoubleArgument(cmd, "etal2", 0.5);
         double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
-        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 0.0);
+        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 0.5);
+        boolean mh = cmd.hasOption("mh");
 
         SLDAMultIdealPoint sampler = new SLDAMultIdealPoint();
         sampler.setVerbose(verbose);
@@ -1190,8 +1196,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), K,
-                alpha, beta, rho, mu, sigma, ipSigma, l1, l2,
-                initState, paramOpt,
+                alpha, beta, etaL2, l1, l2,
+                mh, initState, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
         IOUtils.createFolder(samplerFolder);
@@ -1213,7 +1219,16 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
                         numTopWords, billData.getTopicVocab());
             }
-            sampler.outputAuthorIdealPoint(new File(samplerFolder, "authors.score"), null);
+            sampler.outputAuthorIdealPoint(new File(samplerFolder, AuthorScoreFile), null);
+
+            // training predictions
+            File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(trResultFolder);
+            SparseVector[] predictions = sampler.test(trainVotes);
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
         }
 
         if (cmd.hasOption("testvote")) { // average over multiple test chains
@@ -2205,6 +2220,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         addOption("params", "params");
         addOption("l1", "L1");
         addOption("l2", "L2");
+        addOption("etal2", "eta's L2");
+        options.addOption("mh", false, "mh");
 
         options.addOption("roottopic", false, "roottopic");
         options.addOption("mh", false, "Metropolis-Hastings");

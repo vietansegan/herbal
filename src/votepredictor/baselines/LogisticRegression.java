@@ -508,6 +508,7 @@ public class LogisticRegression extends AbstractVotePredictor {
         if (verbose) {
             logln("Inputing model from " + modelPath);
         }
+
         try {
             if (this.optType == OptType.LIBLINEAR) {
                 String[] filenames = modelPath.list();
@@ -518,10 +519,10 @@ public class LogisticRegression extends AbstractVotePredictor {
             } else {
                 this.weights = new HashMap<>();
                 BufferedReader reader = IOUtils.getBufferedReader(modelPath);
-                String line;
                 String[] sline;
-                while ((line = reader.readLine()) != null) {
-                    sline = line.split("\t");
+                int numBills = Integer.parseInt(reader.readLine());
+                for (int bb = 0; bb < numBills; bb++) {
+                    sline = reader.readLine().split("\t");
                     int bill = Integer.parseInt(sline[0]);
                     double[] ws = null;
                     if (!sline[1].equals("null")) {
@@ -546,7 +547,7 @@ public class LogisticRegression extends AbstractVotePredictor {
                 }
                 reader.close();
             }
-        } catch (IOException | NumberFormatException e) {
+        } catch (IOException | RuntimeException e) {
             e.printStackTrace();
             throw new RuntimeException("Exception while inputing model from " + modelPath);
         }
@@ -564,6 +565,7 @@ public class LogisticRegression extends AbstractVotePredictor {
                 }
             } else {
                 BufferedWriter writer = IOUtils.getBufferedWriter(modelPath);
+                writer.write(this.weights.size() + "\n");
                 for (int bb : this.weights.keySet()) {
                     if (this.weights.get(bb) == null) {
                         writer.write(bb + "\tnull\n");

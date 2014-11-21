@@ -22,6 +22,7 @@ import util.IOUtils;
 import util.SparseVector;
 import util.govtrack.GTLegislator;
 import votepredictor.AbstractVotePredictor;
+import votepredictor.SLDAIdealPoint;
 import votepredictor.SNLDAIdealPoint;
 import votepredictor.baselines.AuthorTFIDFNN;
 import votepredictor.baselines.AuthorTFNN;
@@ -134,7 +135,27 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             basename.append("-party");
         }
 
-        SNLDAIdealPoint sampler = new SNLDAIdealPoint();
+        // ============================= SLDA ==================================
+        SLDAIdealPoint slda = new SLDAIdealPoint();
+        if (cmd.hasOption("slda")) {
+            basename.append("-slda");
+            int K = 20;
+            double alpha = 0.1;
+            double beta = 0.1;
+            double rho = 0.5;
+            double mu = 0.0;
+            double sigma = 2.5;
+            double rate_alpha = 1.0;
+            double rate_eta = 0.01;
+            slda.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), K,
+                    alpha, beta, rho, mu, sigma, rate_alpha, rate_eta,
+                    initState, paramOpt,
+                    burn_in, max_iters, sample_lag, report_interval);
+        }
+
+        // ============================= SNLDA =================================
+        SNLDAIdealPoint snlda = new SNLDAIdealPoint();
         if (cmd.hasOption("snlda")) {
             basename.append("-snlda");
 
@@ -149,13 +170,13 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             double rho = 0.5;
             boolean hasRootTopic = false;
 
-            sampler.setVerbose(verbose);
-            sampler.setDebug(debug);
-            sampler.setLog(true);
-            sampler.setReport(true);
-            sampler.setWordVocab(debateVoteData.getWordVocab());
-            sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
-            sampler.setLabelVocab(billData.getTopicVocab());
+            snlda.setVerbose(verbose);
+            snlda.setDebug(debug);
+            snlda.setLog(true);
+            snlda.setReport(true);
+            snlda.setWordVocab(debateVoteData.getWordVocab());
+            snlda.setAuthorVocab(debateVoteData.getAuthorVocab());
+            snlda.setLabelVocab(billData.getTopicVocab());
 
             PathAssumption pathAssumption = PathAssumption.MAXIMAL;
             String path = CLIUtils.getStringArgument(cmd, "path", "max");
@@ -170,13 +191,13 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                     throw new RuntimeException("Path assumption " + path + " not supported");
             }
 
-            sampler.configure(outputFolder.getAbsolutePath(),
+            snlda.configure(outputFolder.getAbsolutePath(),
                     debateVoteData.getWordVocab().size(), J,
                     issuePhis, alphas, betas, gamma_means, gamma_scales,
                     rho, mu, sigma, hasRootTopic,
                     initState, pathAssumption, paramOpt,
                     burn_in, max_iters, sample_lag, report_interval);
-            sampler.inputModel(sampler.getFinalStateFile().getAbsolutePath());
+            snlda.inputModel(snlda.getFinalStateFile().getAbsolutePath());
         }
 
         String optTypeStr = CLIUtils.getStringArgument(cmd, "opt-type", "lbfgs");
@@ -249,14 +270,18 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 numFeatures.add(2);
             }
 
+            if (cmd.hasOption("slda")) {
+
+            }
+
             if (cmd.hasOption("snlda")) {
-                sampler.train(trainDebateIndices,
+                snlda.train(trainDebateIndices,
                         debateVoteData.getWords(),
                         debateVoteData.getAuthors(),
                         votes, trainAuthorIndices, trainBillIndices,
                         trainVotes);
-                sampler.inputAssignments(sampler.getFinalStateFile().getAbsolutePath());
-                SparseVector[] authorFeatures = sampler.getAuthorFeatures();
+                snlda.inputAssignments(snlda.getFinalStateFile().getAbsolutePath());
+                SparseVector[] authorFeatures = snlda.getAuthorFeatures();
                 addFeatures.add(authorFeatures);
                 numFeatures.add(authorFeatures[0].getDimension());
             }
@@ -276,6 +301,17 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             } else {
                 lr.output(new File(predFolder, MODEL_FILE));
             }
+
+            SparseVector[] predictions = lr.test(
+                    trainDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    trainAuthorIndices,
+                    trainVotes, addFeatures, numFeatures);
+            File trResultFolder = new File(predFolder, TRAIN_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(trResultFolder);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
         }
 
         if (cmd.hasOption("testauthor")) {
@@ -303,15 +339,15 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             }
 
             if (cmd.hasOption("snlda")) {
-                File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
-                sampler.test(testDebateIndices,
+                File samplerFolder = new File(outputFolder, snlda.getSamplerFolder());
+                snlda.test(testDebateIndices,
                         debateVoteData.getWords(),
                         debateVoteData.getAuthors(),
                         testAuthorIndices,
                         testVotes);
-                sampler.inputAssignments(new File(samplerFolder,
+                snlda.inputAssignments(new File(samplerFolder,
                         TEST_PREFIX + "assignments.zip").getAbsolutePath());
-                SparseVector[] authorFeatures = sampler.getAuthorFeatures();
+                SparseVector[] authorFeatures = snlda.getAuthorFeatures();
                 addFeatures.add(authorFeatures);
                 numFeatures.add(authorFeatures[0].getDimension());
             }
