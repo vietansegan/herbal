@@ -11,6 +11,7 @@ import util.SparseVector;
 import util.StatUtils;
 
 /**
+ * Bayesian Multi-dimensional Ideal Point model using gradient descent.
  *
  * @author vietan
  */

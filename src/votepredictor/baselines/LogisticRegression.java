@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import optimization.OWLQNLogisticRegression;
 import optimization.RidgeLogisticRegressionLBFGS;
+import sampling.util.SparseCount;
 import util.IOUtils;
 import util.MiscUtils;
 import util.MismatchRuntimeException;
@@ -43,7 +44,7 @@ public class LogisticRegression extends AbstractVotePredictor {
 
     public enum NormalizeType {
 
-        MINMAX, ZSCORE, NONE
+        MINMAX, ZSCORE, TFIDF, NONE
     };
     // input
     protected int V;
@@ -71,6 +72,7 @@ public class LogisticRegression extends AbstractVotePredictor {
 
     protected HashMap<Integer, double[]> weights; // [B] * [number of features]
     protected AbstractNormalizer[] normalizers;
+    protected double[] idfs;
 
     public LogisticRegression() {
         this.name = "logreg";
@@ -216,11 +218,14 @@ public class LogisticRegression extends AbstractVotePredictor {
             }
         }
 
+        if (normType == NormalizeType.TFIDF) {
+            this.idfs = MiscUtils.getIDFs(words, docIndices, V);
+        }
+
         this.authorVectors = new SparseVector[A];
         for (int aa = 0; aa < A; aa++) {
             this.authorVectors[aa] = new SparseVector(V + totalF);
         }
-
         // lexical features
         for (int dd : docIndices) {
             int author = authors[dd];
@@ -228,12 +233,24 @@ public class LogisticRegression extends AbstractVotePredictor {
             if (aa < 0) {
                 continue;
             }
+            SparseCount counts = new SparseCount();
             for (int nn = 0; nn < words[dd].length; nn++) {
-                this.authorVectors[aa].change(words[dd][nn], 1.0);
+                counts.increment(words[dd][nn]);
+            }
+            for (int vv : counts.getIndices()) {
+                int count = counts.getCount(vv);
+                if (normType == NormalizeType.TFIDF) {
+                    double tfidf = Math.log(count + 1) * idfs[vv];
+                    this.authorVectors[aa].change(vv, tfidf);
+                } else {
+                    this.authorVectors[aa].change(vv, count);
+                }
             }
         }
-        for (SparseVector authorVec : this.authorVectors) {
-            authorVec.normalize();
+        if (normType != NormalizeType.TFIDF) {
+            for (SparseVector authorVec : this.authorVectors) { // normalize raw counts
+                authorVec.normalize();
+            }
         }
 
         // additional features
@@ -255,6 +272,8 @@ public class LogisticRegression extends AbstractVotePredictor {
         } else if (normType == NormalizeType.ZSCORE) {
             normalizers = StatUtils.zNormalizeTrainingData(authorVectors, V + totalF);
         } else if (normType == NormalizeType.NONE) {
+            normalizers = null;
+        } else if (normType == NormalizeType.TFIDF) {
             normalizers = null;
         } else {
             throw new RuntimeException("Normalization type " + normType
@@ -299,8 +318,10 @@ public class LogisticRegression extends AbstractVotePredictor {
             }
             if (vote == Vote.WITH) {
                 labelList.add(1);
-            } else {
+            } else if (vote == Vote.AGAINST) {
                 labelList.add(0);
+            } else {
+                throw new RuntimeException("Vote " + vote + " is invalid");
             }
             authorVecList.add(this.authorVectors[aa]);
         }
@@ -434,13 +455,25 @@ public class LogisticRegression extends AbstractVotePredictor {
             if (aa < 0) {
                 continue;
             }
+            SparseCount counts = new SparseCount();
             for (int nn = 0; nn < words[dd].length; nn++) {
-                testAuthorVecs[aa].change(words[dd][nn], 1.0);
+                counts.increment(words[dd][nn]);
+            }
+            for (int vv : counts.getIndices()) {
+                int count = counts.getCount(vv);
+                if (normType == NormalizeType.TFIDF) {
+                    double tfidf = Math.log(count + 1) * idfs[vv];
+                    testAuthorVecs[aa].change(vv, tfidf);
+                } else {
+                    testAuthorVecs[aa].change(vv, count);
+                }
             }
         }
 
-        for (SparseVector testAuthorVec : testAuthorVecs) {
-            testAuthorVec.normalize();
+        if (normType != NormalizeType.TFIDF) {
+            for (SparseVector testAuthorVec : testAuthorVecs) {
+                testAuthorVec.normalize();
+            }
         }
 
         // additional features
@@ -459,6 +492,10 @@ public class LogisticRegression extends AbstractVotePredictor {
 
         if (normType == NormalizeType.MINMAX || normType == NormalizeType.ZSCORE) {
             StatUtils.normalizeTestData(testAuthorVecs, normalizers);
+        } else if (normType == NormalizeType.TFIDF) {
+            if (normalizers != null) {
+                throw new RuntimeException();
+            }
         } else if (normType == NormalizeType.NONE) {
             if (normalizers != null) {
                 throw new RuntimeException();
@@ -532,16 +569,27 @@ public class LogisticRegression extends AbstractVotePredictor {
                 }
 
                 if (normType != NormalizeType.NONE) {
-                    int numFeatures = Integer.parseInt(reader.readLine());
-                    this.normalizers = new AbstractNormalizer[numFeatures];
-                    for (int ff = 0; ff < numFeatures; ff++) {
-                        if (normType == NormalizeType.MINMAX) {
-                            normalizers[ff] = MinMaxNormalizer.input(reader.readLine());
-                        } else if (normType == NormalizeType.ZSCORE) {
-                            normalizers[ff] = ZNormalizer.input(reader.readLine());
-                        } else {
-                            throw new RuntimeException("Normalization type " + normType
-                                    + " is not supported");
+                    if (normType == NormalizeType.TFIDF) {
+                        int vocabSize = Integer.parseInt(reader.readLine());
+                        if (V != vocabSize) {
+                            throw new MismatchRuntimeException(vocabSize, V);
+                        }
+                        this.idfs = new double[V];
+                        for (int vv = 0; vv < V; vv++) {
+                            this.idfs[vv] = Double.parseDouble(reader.readLine());
+                        }
+                    } else {
+                        int numFeatures = Integer.parseInt(reader.readLine());
+                        this.normalizers = new AbstractNormalizer[numFeatures];
+                        for (int ff = 0; ff < numFeatures; ff++) {
+                            if (normType == NormalizeType.MINMAX) {
+                                normalizers[ff] = MinMaxNormalizer.input(reader.readLine());
+                            } else if (normType == NormalizeType.ZSCORE) {
+                                normalizers[ff] = ZNormalizer.input(reader.readLine());
+                            } else {
+                                throw new RuntimeException("Normalization type " + normType
+                                        + " is not supported");
+                            }
                         }
                     }
                 }
@@ -575,15 +623,22 @@ public class LogisticRegression extends AbstractVotePredictor {
                 }
 
                 if (normType != NormalizeType.NONE) {
-                    writer.write(normalizers.length + "\n");
-                    for (AbstractNormalizer normalizer : normalizers) {
-                        if (normType == NormalizeType.MINMAX) {
-                            writer.write(MinMaxNormalizer.output((MinMaxNormalizer) normalizer) + "\n");
-                        } else if (normType == NormalizeType.ZSCORE) {
-                            writer.write(ZNormalizer.output((ZNormalizer) normalizer) + "\n");
-                        } else {
-                            throw new RuntimeException("Normalization type " + normType
-                                    + " is not supported");
+                    if (normType == NormalizeType.TFIDF) {
+                        writer.write(V + "\n");
+                        for (double idf : idfs) {
+                            writer.write(idf + "\n");
+                        }
+                    } else {
+                        writer.write(normalizers.length + "\n");
+                        for (AbstractNormalizer normalizer : normalizers) {
+                            if (normType == NormalizeType.MINMAX) {
+                                writer.write(MinMaxNormalizer.output((MinMaxNormalizer) normalizer) + "\n");
+                            } else if (normType == NormalizeType.ZSCORE) {
+                                writer.write(ZNormalizer.output((ZNormalizer) normalizer) + "\n");
+                            } else {
+                                throw new RuntimeException("Normalization type " + normType
+                                        + " is not supported");
+                            }
                         }
                     }
                 }

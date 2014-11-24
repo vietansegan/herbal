@@ -912,7 +912,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
         startTime = System.currentTimeMillis();
 
         for (iter = 0; iter < MAX_ITER; iter++) {
-            boolean isReporting = isReporting();
+            isReporting = isReporting();
             if (isReporting) {
                 double loglikelihood = this.getLogLikelihood();
                 logLikelihoods.add(loglikelihood);
@@ -1909,39 +1909,10 @@ public class SNLDAIdealPoint extends AbstractSampler {
     }
 
     /**
-     * Get the topic distribution for each author. (obsolete)
+     * Get the features extracted.
      *
      * @return
      */
-    public double[][] getAuthorTopicDistributions() {
-        // counts 
-        SparseCount[] authorTopicCounts = new SparseCount[A];
-        for (int aa = 0; aa < A; aa++) {
-            authorTopicCounts[aa] = new SparseCount();
-        }
-        for (int kk = 0; kk < K; kk++) {
-            Node node = this.root.getChild(kk);
-            for (int dd : node.subtreeTokenCounts.getIndices()) {
-                int aa = authors[dd];
-                authorTopicCounts[aa].changeCount(kk, node.subtreeTokenCounts.getCount(dd));
-            }
-        }
-
-        // normalize
-        double[][] authorTopicDists = new double[A][K];
-        for (int aa = 0; aa < A; aa++) {
-            int totalCount = authorTopicCounts[aa].getCountSum();
-            if (totalCount == 0) {
-                Arrays.fill(authorTopicDists[aa], 1.0 / K);
-            } else {
-                for (int kk = 0; kk < K; kk++) {
-                    authorTopicDists[aa][kk] = (double) authorTopicCounts[aa].getCount(kk) / totalCount;
-                }
-            }
-        }
-        return authorTopicDists;
-    }
-
     public SparseVector[] getAuthorFeatures() {
         ArrayList<Node> nodeList = getNodeList();
         int N = nodeList.size();
@@ -1978,50 +1949,6 @@ public class SNLDAIdealPoint extends AbstractSampler {
             authorFeatures[aa].set(2 * N, idealPoint);
         }
 
-        return authorFeatures;
-    }
-
-    public SparseVector[] getAuthorNodeDistributions() {
-        ArrayList<Node> nodeList = getNodeList();
-
-        SparseVector[] authorFeatures = new SparseVector[A];
-        for (int aa = 0; aa < A; aa++) {
-            authorFeatures[aa] = new SparseVector(nodeList.size());
-        }
-
-        for (int dd = 0; dd < z.length; dd++) {
-            int aa = authors[dd];
-            for (Node item : z[dd]) {
-                int nodeIdx = nodeList.indexOf(item);
-                authorFeatures[aa].change(nodeIdx, 1.0);
-            }
-        }
-
-        for (int aa = 0; aa < A; aa++) {
-            authorFeatures[aa].scale(1.0 / authorTokenCounts[aa]);
-        }
-        return authorFeatures;
-    }
-
-    public SparseVector[] getAuthorScaledNodes() {
-        ArrayList<Node> nodeList = getNodeList();
-
-        SparseVector[] authorFeatures = new SparseVector[A];
-        for (int aa = 0; aa < A; aa++) {
-            authorFeatures[aa] = new SparseVector(nodeList.size());
-        }
-
-        for (int dd = 0; dd < z.length; dd++) {
-            int aa = authors[dd];
-            for (Node item : z[dd]) {
-                int nodeIdx = nodeList.indexOf(item);
-                authorFeatures[aa].change(nodeIdx, item.eta);
-            }
-        }
-
-        for (int aa = 0; aa < A; aa++) {
-            authorFeatures[aa].scale(1.0 / authorTokenCounts[aa]);
-        }
         return authorFeatures;
     }
 

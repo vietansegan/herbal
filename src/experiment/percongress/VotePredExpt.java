@@ -532,6 +532,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             case "slda-ideal-point":
                 runSLDAIdealPoint(outputFolder);
                 break;
+            case "slda-mult-ideal-point":
+                runSLDAMultIdealPoint(outputFolder);
+                break;
             case "snlda-ideal-point":
                 runSNLDAIdealPoint(outputFolder);
                 break;
@@ -979,6 +982,12 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             pred.train();
             IOUtils.createFolder(predFolder);
             pred.output(new File(predFolder, MODEL_FILE));
+
+            File trResultFolder = new File(predFolder, TRAIN_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(trResultFolder);
+            SparseVector[] predictions = pred.test(trainVotes);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
         }
 
         if (cmd.hasOption("testvote")) {
@@ -1094,28 +1103,38 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testvote")) { // average over multiple test chains
-            SparseVector[] predictions = null;
-            int count = 0;
-            File reportFolder = new File(sampler.getReportFolderPath());
-            String[] files = reportFolder.list();
-            for (String file : files) {
-                if (!file.endsWith(".zip")) {
-                    continue;
-                }
-                sampler.inputState(new File(reportFolder, file));
-                SparseVector[] partPreds = sampler.predict(testVotes);
-                if (predictions == null) {
-                    predictions = partPreds;
-                } else {
-                    for (int aa = 0; aa < predictions.length; aa++) {
-                        predictions[aa].add(partPreds[aa]);
-                    }
-                }
-                count++;
-            }
-            for (SparseVector prediction : predictions) {
-                prediction.scale(1.0 / count);
-            }
+            sampler.train(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
+            sampler.inputFinalState();
+            SparseVector[] predictions = sampler.predict(testVotes);
+
+//            SparseVector[] predictions = null;
+//            int count = 0;
+//            File reportFolder = new File(sampler.getReportFolderPath());
+//            String[] files = reportFolder.list();
+//            for (String file : files) {
+//                if (!file.endsWith(".zip")) {
+//                    continue;
+//                }
+//                sampler.inputState(new File(reportFolder, file));
+//                SparseVector[] partPreds = sampler.predict(testVotes);
+//                if (predictions == null) {
+//                    predictions = partPreds;
+//                } else {
+//                    for (int aa = 0; aa < predictions.length; aa++) {
+//                        predictions[aa].add(partPreds[aa]);
+//                    }
+//                }
+//                count++;
+//            }
+//            for (SparseVector prediction : predictions) {
+//                prediction.scale(1.0 / count);
+//            }
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
@@ -1180,10 +1199,10 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
         double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
         double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
-        double etaL2 = CLIUtils.getDoubleArgument(cmd, "etal2", 0.5);
-        double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
-        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 0.5);
-        boolean mh = cmd.hasOption("mh");
+        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 0.5);
+        double gamma = CLIUtils.getDoubleArgument(cmd, "gamma", 0.5);
+        double lexl1 = CLIUtils.getDoubleArgument(cmd, "lexl1", 0.0);
+        double lexl2 = CLIUtils.getDoubleArgument(cmd, "lexl2", 0.0);
 
         SLDAMultIdealPoint sampler = new SLDAMultIdealPoint();
         sampler.setVerbose(verbose);
@@ -1196,8 +1215,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), K,
-                alpha, beta, etaL2, l1, l2,
-                mh, initState, paramOpt,
+                alpha, beta, sigma, gamma, lexl1, lexl2,
+                initState, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
         IOUtils.createFolder(samplerFolder);
@@ -1224,7 +1243,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             // training predictions
             File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(trResultFolder);
-            SparseVector[] predictions = sampler.test(trainVotes);
+            SparseVector[] predictions = sampler.test();
             AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
@@ -1232,28 +1251,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testvote")) { // average over multiple test chains
-            SparseVector[] predictions = null;
-            int count = 0;
-            File reportFolder = new File(sampler.getReportFolderPath());
-            String[] files = reportFolder.list();
-            for (String file : files) {
-                if (!file.endsWith(".zip")) {
-                    continue;
-                }
-                sampler.inputState(new File(reportFolder, file));
-                SparseVector[] partPreds = sampler.test(testVotes);
-                if (predictions == null) {
-                    predictions = partPreds;
-                } else {
-                    for (int aa = 0; aa < predictions.length; aa++) {
-                        predictions[aa].add(partPreds[aa]);
-                    }
-                }
-                count++;
-            }
-            for (SparseVector prediction : predictions) {
-                prediction.scale(1.0 / count);
-            }
+            sampler.setupData(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
+            SparseVector[] predictions = sampler.testMultiples();
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
@@ -1265,13 +1270,25 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         if (cmd.hasOption("testauthor")) {
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
-            SparseVector[] predictions = sampler.test(null,
-                    testDebateIndices,
+
+            sampler.setupData(testDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
+                    null,
                     testAuthorIndices,
-                    testVotes,
-                    null, null, null,
+                    testBillIndices,
+                    testVotes);
+//            SparseVector[] predictions = sampler.test(null,
+//                    testDebateIndices,
+//                    debateVoteData.getWords(),
+//                    debateVoteData.getAuthors(),
+//                    testAuthorIndices,
+//                    testVotes,
+//                    null, null, null,
+//                    new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
+
+            SparseVector[] predictions = sampler.test(null,
+                    null,
                     new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
 
             String predFile = PREDICTION_FILE;
@@ -1495,7 +1512,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
     }
 
     protected void runSNLDAMultIdealPoint(File outputFolder) {
-        // estimate seeded issues
         double[][] issuePhis = estimateIssues();
         int J = CLIUtils.getIntegerArgument(cmd, "J", 3);
         double[] alphas = CLIUtils.getDoubleArrayArgument(cmd, "alphas",
@@ -1509,9 +1525,10 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
         double[] sigmas = CLIUtils.getDoubleArrayArgument(cmd, "sigmas",
                 new double[]{0.0, 1.0, 2.5}, ",");
-        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
         double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
         double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 1.0);
+        double lexl1 = CLIUtils.getDoubleArgument(cmd, "lexl1", 0.0);
+        double lexl2 = CLIUtils.getDoubleArgument(cmd, "lexl2", 0.0);
         boolean hasRootTopic = cmd.hasOption("roottopic");
 
         SNLDAMultIdealPoint sampler = new SNLDAMultIdealPoint();
@@ -1539,7 +1556,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), J,
                 issuePhis, alphas, betas, gamma_means, gamma_scales,
-                mu, sigmas, sigma, l1, l2, hasRootTopic,
+                mu, sigmas, l1, l2, lexl1, lexl2, hasRootTopic,
                 initState, pathAssumption, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
@@ -1556,106 +1573,18 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile), numTopWords);
         }
 
-        if (cmd.hasOption("testvote")) { // average over multiple test chains
-//            SparseVector[] predictions = null;
-//            int count = 0;
-//            File reportFolder = new File(sampler.getReportFolderPath());
-//            String[] files = reportFolder.list();
-//            for (String file : files) {
-//                if (!file.endsWith(".zip")) {
-//                    continue;
-//                }
-//                sampler.inputState(new File(reportFolder, file));
-//                SparseVector[] partPreds = sampler.test(testVotes);
-//                if (predictions == null) {
-//                    predictions = partPreds;
-//                } else {
-//                    for (int aa = 0; aa < predictions.length; aa++) {
-//                        predictions[aa].add(partPreds[aa]);
-//                    }
-//                }
-//                count++;
-//            }
-//            for (SparseVector prediction : predictions) {
-//                prediction.scale(1.0 / count);
-//            }
-//            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
-//            IOUtils.createFolder(teResultFolder);
-//            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
-//                    votes, predictions);
-//            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
-//                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
-        }
-
         if (cmd.hasOption("testauthor")) {
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
 
-            SparseVector[] predictions = null;
-            if (cmd.hasOption("parallel")) {
-//                File iterPredFolderPath = new File(samplerFolder,
-//                        AbstractSampler.IterPredictionFolder);
-//                predictions = SNLDAIdealPoint.parallelTest(testDebateIndices,
-//                        debateVoteData.getWords(),
-//                        debateVoteData.getAuthors(),
-//                        testAuthorIndices,
-//                        testVotes,
-//                        iterPredFolderPath,
-//                        sampler);
-//
-//                // average author scores
-//                String[] filenames = iterPredFolderPath.list();
-//                double[] authorScores = null;
-//                int count = 0;
-//                for (String filename : filenames) {
-//                    if (!filename.contains(AbstractVotePredictor.AuthorScoreFile)) {
-//                        continue;
-//                    }
-//                    double[] partAuthorScores = AbstractVotePredictor.inputAuthorScores(
-//                            new File(iterPredFolderPath, filename));
-//                    if (authorScores == null) {
-//                        authorScores = partAuthorScores;
-//                    } else {
-//                        for (int aa = 0; aa < authorScores.length; aa++) {
-//                            authorScores[aa] += partAuthorScores[aa];
-//                        }
-//                    }
-//                    count++;
-//                }
-//                for (int aa = 0; aa < authorScores.length; aa++) {
-//                    authorScores[aa] /= count;
-//                }
-//                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
-//                        debateVoteData.getAuthorVocab(),
-//                        testAuthorIndices,
-//                        testVotes,
-//                        authorScores,
-//                        debateVoteData.getAuthorTable());
-
-            } else {
-                predictions = sampler.test(null,
-                        testDebateIndices,
-                        debateVoteData.getWords(),
-                        debateVoteData.getAuthors(),
-                        testAuthorIndices,
-                        testVotes,
-                        null, null, null,
-                        new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
-
-//                predictions = sampler.test(null,
-//                        testDebateIndices,
-//                        debateVoteData.getWords(),
-//                        debateVoteData.getAuthors(),
-//                        testAuthorIndices,
-//                        testVotes,
-//                        null, null, null);
-//                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
-//                        debateVoteData.getAuthorVocab(),
-//                        testAuthorIndices,
-//                        testVotes,
-//                        sampler.getPredictedUs(),
-//                        debateVoteData.getAuthorTable());
-            }
+            SparseVector[] predictions = sampler.test(null,
+                    testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    testAuthorIndices,
+                    testVotes,
+                    null, null, null,
+                    new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
 
             String predFile = PREDICTION_FILE;
             String resultFile = RESULT_FILE;
@@ -2220,6 +2149,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         addOption("params", "params");
         addOption("l1", "L1");
         addOption("l2", "L2");
+        addOption("lexl1", "Lexical L1");
+        addOption("lexl2", "Lexical L2");
         addOption("etal2", "eta's L2");
         options.addOption("mh", false, "mh");
 
@@ -2238,6 +2169,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         options.addOption("hack", false, "hack");
 
         // logistic regression features
+        options.addOption("sldamult", false, "SLDA-Mult features");
         options.addOption("snlda", false, "SNLDA features");
         options.addOption("party", false, "Party features");
 

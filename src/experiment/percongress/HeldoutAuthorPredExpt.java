@@ -1,6 +1,7 @@
 package experiment.percongress;
 
 import core.AbstractModel;
+import core.AbstractSampler.InitialState;
 import data.Congress;
 import data.TextDataset;
 import data.Vote;
@@ -22,7 +23,7 @@ import util.IOUtils;
 import util.SparseVector;
 import util.govtrack.GTLegislator;
 import votepredictor.AbstractVotePredictor;
-import votepredictor.SLDAIdealPoint;
+import votepredictor.SLDAMultIdealPoint;
 import votepredictor.SNLDAIdealPoint;
 import votepredictor.baselines.AuthorTFIDFNN;
 import votepredictor.baselines.AuthorTFNN;
@@ -136,22 +137,25 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         }
 
         // ============================= SLDA ==================================
-        SLDAIdealPoint slda = new SLDAIdealPoint();
-        if (cmd.hasOption("slda")) {
-            basename.append("-slda");
-            int K = 20;
+        SLDAMultIdealPoint sldaM = new SLDAMultIdealPoint();
+        if (cmd.hasOption("sldamult")) {
+            basename.append("-slda_mult");
+            int K = 25;
             double alpha = 0.1;
             double beta = 0.1;
-            double rho = 0.5;
-            double mu = 0.0;
-            double sigma = 2.5;
-            double rate_alpha = 1.0;
-            double rate_eta = 0.01;
-            slda.configure(outputFolder.getAbsolutePath(),
-                    debateVoteData.getWordVocab().size(), K,
-                    alpha, beta, rho, mu, sigma, rate_alpha, rate_eta,
-                    initState, paramOpt,
-                    burn_in, max_iters, sample_lag, report_interval);
+            double etaL2 = 0.1;
+            double l1 = 0.0;
+            double l2 = 0.1;
+            double lexl1 = CLIUtils.getDoubleArgument(cmd, "lexl1", 0.0);
+            double lexl2 = CLIUtils.getDoubleArgument(cmd, "lexl2", 2.5);
+            boolean pOpt = true;
+            InitialState iState = InitialState.PRESET;
+//            sldaM.configure(outputFolder.getAbsolutePath(),
+//                    debateVoteData.getWordVocab().size(), K,
+//                    alpha, beta, etaL2, l1, l2, lexl1, lexl2,
+//                    iState, pOpt,
+//                    burn_in, max_iters, sample_lag, report_interval);
+            sldaM.inputModel(sldaM.getFinalStateFile().getAbsolutePath());
         }
 
         // ============================= SNLDA =================================
@@ -205,13 +209,16 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         LogisticRegression lr = new LogisticRegression(basename.toString());
         String params = CLIUtils.getStringArgument(cmd, "params", "0.0,0.1");
         String[] sparams = params.split(",");
-        NormalizeType normType = NormalizeType.MINMAX;
+        NormalizeType normType = NormalizeType.NONE;
         switch (normTypeStr) {
             case "minmax":
                 normType = NormalizeType.MINMAX;
                 break;
             case "zscore":
                 normType = NormalizeType.ZSCORE;
+                break;
+            case "tfidf":
+                normType = NormalizeType.TFIDF;
                 break;
             case "none":
                 normType = NormalizeType.NONE;
@@ -270,8 +277,18 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 numFeatures.add(2);
             }
 
-            if (cmd.hasOption("slda")) {
-
+            if (cmd.hasOption("sldamult")) {
+                sldaM.setupData(trainDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        votes,
+                        trainAuthorIndices,
+                        trainBillIndices,
+                        trainVotes);
+                sldaM.inputAssignments(sldaM.getFinalStateFile().getAbsolutePath());
+                SparseVector[] authorFeatures = sldaM.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
             }
 
             if (cmd.hasOption("snlda")) {
@@ -348,6 +365,21 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 snlda.inputAssignments(new File(samplerFolder,
                         TEST_PREFIX + "assignments.zip").getAbsolutePath());
                 SparseVector[] authorFeatures = snlda.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
+
+            if (cmd.hasOption("sldamult")) {
+                File samplerFolder = new File(outputFolder, sldaM.getSamplerFolder());
+                sldaM.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices, null,
+                        testVotes);
+                sldaM.inputAssignments(new File(samplerFolder,
+                        TEST_PREFIX + "assignments.zip").getAbsolutePath());
+                SparseVector[] authorFeatures = sldaM.getAuthorFeatures();
                 addFeatures.add(authorFeatures);
                 numFeatures.add(authorFeatures[0].getDimension());
             }

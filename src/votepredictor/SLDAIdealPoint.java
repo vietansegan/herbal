@@ -225,7 +225,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         // statistics
         numTokens = 0;
         for (int d = 0; d < D; d++) {
-            numTokens += words[d].length;
+            numTokens += this.words[d].length;
         }
 
         // author document list
@@ -234,7 +234,7 @@ public class SLDAIdealPoint extends AbstractSampler {
             authorDocList[a] = new ArrayList<Integer>();
         }
         for (int d = 0; d < D; d++) {
-            if (words[d].length > 0) {
+            if (this.words[d].length > 0) {
                 authorDocList[authors[d]].add(d);
             }
         }
@@ -274,7 +274,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         this.authorIndices = authorIndices;
         if (authorIndices == null) {
             this.authorIndices = new ArrayList<>();
-            for (int aa = 0; aa < votes.length; aa++) {
+            for (int aa = 0; aa < trainVotes.length; aa++) {
                 this.authorIndices.add(aa);
             }
         }
@@ -290,7 +290,7 @@ public class SLDAIdealPoint extends AbstractSampler {
         this.billIndices = billIndices;
         if (billIndices == null) {
             this.billIndices = new ArrayList<>();
-            for (int bb = 0; bb < votes[0].length; bb++) {
+            for (int bb = 0; bb < trainVotes[0].length; bb++) {
                 this.billIndices.add(bb);
             }
         }
@@ -751,8 +751,8 @@ public class SLDAIdealPoint extends AbstractSampler {
         startTime = System.currentTimeMillis();
 
         for (iter = 0; iter < MAX_ITER; iter++) {
-            isReporting = isLogging();
-            if (isReporting) {
+            isReporting = isReporting(); 
+           if (isReporting) {
                 double loglikelihood = this.getLogLikelihood();
                 logLikelihoods.add(loglikelihood);
                 String str = "\n\nIter " + iter + "/" + MAX_ITER
@@ -934,7 +934,7 @@ public class SLDAIdealPoint extends AbstractSampler {
             ex.printStackTrace();
         }
 
-        if (isReporting()) {
+        if (isReporting) {
             logln("--- converged? " + converged);
         }
 

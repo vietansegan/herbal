@@ -24,6 +24,7 @@ import util.MismatchRuntimeException;
 import util.SamplerUtils;
 import util.SparseVector;
 import util.StatUtils;
+import util.evaluation.Measurement;
 import util.normalizer.MinMaxNormalizer;
 
 /**
@@ -38,9 +39,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     protected double[] gamma_scales;    // [L-1] scale of bias coins
     protected double mu;
     protected double[] sigmas;
-    protected double ipSigma;
     protected double l1;
     protected double l2;
+    protected double lexl1;
+    protected double lexl2;
     // input
     protected int[][] words;
     protected ArrayList<Integer> docIndices;    // potentially not needed
@@ -68,7 +70,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     Node root;
     Node[][] z;
     protected SparseVector[] authorIssueScores; // [A][K]
-    protected double[][] xy; // [B][K + 1]
+    protected SparseVector[] xy; // [B][K + 1]
     protected SparseVector[] lexicalParams; // [B][V]
     // internal
     protected SparseVector[] authorBillLexicalScores; // [A][B]
@@ -78,7 +80,6 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     protected int numTokensChanged;
     protected double[] background;
     protected int numTokensAccepted;
-    protected int[][] authorDocIndices; // [A] x [D_a]: store the list of documents for each author
     protected int[] authorTokenCounts;  // [A]: store the total #tokens for each author
     protected ArrayList<String> authorVocab;
     protected ArrayList<String> voteVocab;
@@ -113,9 +114,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             double[] gamma_scales,
             double mu, // mean of Gaussian for regression parameters
             double[] sigmas, // variance of Gaussian for regression parameters
-            double ipSigma, // variance of x, y
-            double l1, // l1-regularizer for lexical regression
-            double l2, // l2-regularizer for lexical regression
+            double l1,
+            double l2,
+            double lexl1, // l1-regularizer for lexical regression
+            double lexl2, // l2-regularizer for lexical regression
             boolean hasRootTopic,
             InitialState initState,
             PathAssumption pathAssumption,
@@ -137,11 +139,12 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         this.gamma_scales = gamma_scales;
         this.mu = mu;
         this.sigmas = sigmas;
-        this.ipSigma = ipSigma;
         this.l1 = l1;
         this.l2 = l2;
+        this.lexl1 = lexl1;
+        this.lexl2 = lexl2;
         this.hasRootTopic = hasRootTopic;
-        this.lexReg = this.l1 > 0 || this.l2 > 0;
+        this.lexReg = this.lexl1 > 0 || this.lexl2 > 0;
 
         this.hyperparams = new ArrayList<Double>();
         this.sampledParams = new ArrayList<ArrayList<Double>>();
@@ -170,9 +173,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             logln("--- gamma scales:\t" + MiscUtils.arrayToString(gamma_scales));
             logln("--- reg mu:\t" + MiscUtils.formatDouble(mu));
             logln("--- reg sigmas:\t" + MiscUtils.arrayToString(sigmas));
-            logln("--- ideal-point sigma:\t" + MiscUtils.formatDouble(ipSigma));
             logln("--- l1:\t" + MiscUtils.formatDouble(l1));
             logln("--- l2:\t" + MiscUtils.formatDouble(l2));
+            logln("--- lex-l1:\t" + MiscUtils.formatDouble(lexl1));
+            logln("--- lex-l2:\t" + MiscUtils.formatDouble(lexl2));
             logln("--- burn-in:\t" + BURN_IN);
             logln("--- max iter:\t" + MAX_ITER);
             logln("--- sample lag:\t" + LAG);
@@ -240,6 +244,8 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         }
         str.append("_l1-").append(formatter.format(l1));
         str.append("_l2-").append(formatter.format(l2));
+        str.append("_ll1-").append(formatter.format(lexl1));
+        str.append("_ll2-").append(formatter.format(lexl2));
         str.append("_opt-").append(this.paramOptimized);
         str.append("_").append(pathAssumption);
         this.name = str.toString();
@@ -302,66 +308,6 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     }
 
     /**
-     * Pre-compute useful data statistics.
-     */
-    protected void prepareDataStatistics() {
-        // statistics
-        numTokens = 0;
-        background = new double[V];
-        for (int dd = 0; dd < D; dd++) {
-            numTokens += words[dd].length;
-            for (int nn = 0; nn < words[dd].length; nn++) {
-                background[words[dd][nn]]++;
-            }
-        }
-        for (int vv = 0; vv < V; vv++) {
-            background[vv] /= numTokens;
-        }
-
-        // author document list
-        ArrayList<Integer>[] authorDocList = new ArrayList[A];
-        for (int a = 0; a < A; a++) {
-            authorDocList[a] = new ArrayList<Integer>();
-        }
-        for (int d = 0; d < D; d++) {
-            if (words[d].length > 0) {
-                authorDocList[authors[d]].add(d);
-            }
-        }
-        this.authorDocIndices = new int[A][];
-        this.authorTokenCounts = new int[A];
-        for (int a = 0; a < A; a++) {
-            this.authorDocIndices[a] = new int[authorDocList[a].size()];
-            for (int dd = 0; dd < this.authorDocIndices[a].length; dd++) {
-                this.authorDocIndices[a][dd] = authorDocList[a].get(dd);
-                this.authorTokenCounts[a] += words[authorDocIndices[a][dd]].length;
-            }
-        }
-
-        if (lexReg) { // compute lexical design matrix if including lexical regression
-            this.authorLexDsgMatrix = new SparseVector[A];
-            for (int aa = 0; aa < A; aa++) {
-                this.authorLexDsgMatrix[aa] = new SparseVector(V);
-            }
-            for (int dd = 0; dd < D; dd++) {
-                int author = this.authors[dd];
-                for (int nn = 0; nn < this.words[dd].length; nn++) {
-                    this.authorLexDsgMatrix[author].change(this.words[dd][nn], 1.0);
-                }
-            }
-            for (SparseVector sv : this.authorLexDsgMatrix) {
-                sv.normalize();
-            }
-
-            if (normalizers == null) { // during training
-                normalizers = StatUtils.minmaxNormalizeTrainingData(authorLexDsgMatrix, V);
-            } else { // during test
-                StatUtils.normalizeTestData(authorLexDsgMatrix, normalizers);
-            }
-        }
-    }
-
-    /**
      * Set training data.
      *
      * @param docIndices Indices of selected documents
@@ -379,6 +325,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             ArrayList<Integer> authorIndices,
             ArrayList<Integer> billIndices,
             boolean[][] maskedVotes) {
+        if (verbose) {
+            logln("Setting up data ...");
+        }
+
         // list of authors
         this.authorIndices = authorIndices;
         if (authorIndices == null) {
@@ -436,53 +386,50 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             }
         }
 
-        this.prepareDataStatistics();
-
-        if (verbose) {
-            logln("--- # documents:\t" + D);
-            int numNonEmptyDocs = 0;
-            for (int a = 0; a < A; a++) {
-                numNonEmptyDocs += this.authorDocIndices[a].length;
+        // statistics
+        numTokens = 0;
+        background = new double[V];
+        authorTokenCounts = new int[A];
+        for (int dd = 0; dd < D; dd++) {
+            numTokens += this.words[dd].length;
+            authorTokenCounts[this.authors[dd]] += this.words[dd].length;
+            for (int nn = 0; nn <this. words[dd].length; nn++) {
+                background[this.words[dd][nn]]++;
             }
-            logln("--- # non-empty documents:\t" + numNonEmptyDocs);
-            int numNonEmptyAuthors = 0;
-            for (int a = 0; a < A; a++) {
-                if (authorDocIndices[a].length != 0) {
-                    numNonEmptyAuthors++;
+        }
+        for (int vv = 0; vv < V; vv++) {
+            background[vv] /= numTokens;
+        }
+
+        if (lexReg) { // compute lexical design matrix if including lexical regression
+            this.authorLexDsgMatrix = new SparseVector[A];
+            for (int aa = 0; aa < A; aa++) {
+                this.authorLexDsgMatrix[aa] = new SparseVector(V);
+            }
+            for (int dd = 0; dd < D; dd++) {
+                int author = this.authors[dd];
+                for (int nn = 0; nn < this.words[dd].length; nn++) {
+                    this.authorLexDsgMatrix[author].change(this.words[dd][nn], 1.0);
                 }
             }
-            logln("--- # speakers:\t" + A);
-            logln("--- # non-empty speakers:\t" + numNonEmptyAuthors);
+            for (SparseVector sv : this.authorLexDsgMatrix) {
+                sv.normalize();
+            }
+
+            if (normalizers == null) { // during training
+                normalizers = StatUtils.minmaxNormalizeTrainingData(authorLexDsgMatrix, V);
+            } else { // during test
+                StatUtils.normalizeTestData(authorLexDsgMatrix, normalizers);
+            }
+        }
+
+        if (verbose) {
+            logln("--- # authors:\t" + A);
             logln("--- # tokens:\t" + numTokens
                     + ", " + StatUtils.sum(authorTokenCounts));
         }
     }
 
-//    public SparseVector[] test(File stateFile,
-//            ArrayList<Integer> docIndices,
-//            int[][] words,
-//            int[] authors,
-//            ArrayList<Integer> authorIndices,
-//            boolean[][] testVotes,
-//            File predictionFile,
-//            File partAuthorScoreFile,
-//            File partVoteScoreFile) {
-//
-//        this.setupData(docIndices, words, authors, null, authorIndices, null, testVotes);
-//
-//        SparseVector[] predictions = new SparseVector[testVotes.length];
-//        for (int aa = 0; aa < A; aa++) {
-//            int author = this.authorIndices.get(aa);
-//            predictions[author] = new SparseVector(testVotes[author].length);
-//            for (int bb = 0; bb < testVotes[author].length; bb++) {
-//                if (isValidVote(aa, bb)) {
-//                    double val = Math.exp(authorLexDsgMatrix[aa].dotProduct(lexicalParams[bb]));
-//                    predictions[author].set(bb, val / (1.0 + val));
-//                }
-//            }
-//        }
-//        return predictions;
-//    }
     /**
      * Make prediction for held-out voters using their text using the final
      * learned model. This can only make predictions on existing bills, so no
@@ -556,9 +503,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             predictions[author] = new SparseVector(validVotes[author].length);
             for (int bb = 0; bb < validVotes[author].length; bb++) {
                 if (isValidVote(aa, bb)) {
-                    double dotprod = xy[bb][K];
+                    double dotprod = xy[bb].get(K);
                     for (int kk = 0; kk < K; kk++) {
-                        dotprod += authorIssueScores[aa].get(kk) * xy[bb][kk];
+                        dotprod += authorIssueScores[aa].get(kk) * xy[bb].get(K);
                     }
                     if (lexReg) {
                         dotprod += authorBillLexicalScores[aa].get(bb);
@@ -617,8 +564,8 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
 
         // sample
         for (iter = 0; iter < testMaxIter; iter++) {
-            boolean disp = verbose && iter % testRepInterval == 0;
-            if (disp) {
+            isReporting = verbose && iter % testRepInterval == 0;
+            if (isReporting) {
                 String str = "Iter " + iter + "/" + testMaxIter + "\n" + getCurrentState();
                 if (iter < testBurnIn) {
                     logln("--- Burning in. " + str);
@@ -635,7 +582,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 topicTime = sampleZs(!REMOVE, !ADD, REMOVE, ADD, !OBSERVED);
             }
 
-            if (disp) {
+            if (isReporting) {
                 logln("--- --- Time. Topic: " + topicTime);
                 logln("--- --- # tokens: " + numTokens
                         + ". # tokens changed: " + numTokensChanged
@@ -673,6 +620,48 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         }
     }
 
+    /**
+     * Make prediction on held-out votes of known legislators and known votes.
+     *
+     * @param testVotes Indicators of test votes
+     * @return Predicted probabilities
+     */
+    public SparseVector[] test(boolean[][] testVotes) {
+        SparseVector[] predictions = new SparseVector[testVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(testVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = billIndices.get(bb);
+                if (testVotes[author][bill]) {
+                    double dp = xy[bb].get(K);
+                    for (int kk = 0; kk < K; kk++) {
+                        dp += authorIssueScores[aa].get(kk) * xy[bb].get(K);
+                    }
+                    if (lexReg) {
+                        dp += authorBillLexicalScores[aa].get(bb);
+                    }
+                    double score = Math.exp(dp);
+                    double prob = score / (1.0 + score);
+                    predictions[author].set(bill, prob);
+                }
+            }
+        }
+        return predictions;
+    }
+
+    /**
+     * Evaluate prediction during training.
+     */
+    private void evaluate() {
+        SparseVector[] predictions = test(validVotes);
+        ArrayList<Measurement> measurements = AbstractVotePredictor
+                .evaluate(votes, validVotes, predictions);
+        for (Measurement m : measurements) {
+            logln(">>> >>> " + m.getName() + ": " + m.getValue());
+        }
+    }
+
     @Override
     public void initialize() {
         if (verbose) {
@@ -687,8 +676,6 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         if (lexReg) {
             initializeLexicalParameters();
         }
-        updateEtas();
-        updateXY();
 
         if (debug) {
             validate("Initialized");
@@ -715,13 +702,62 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             for (int bb = 0; bb < B; bb++) {
                 this.lexicalParams[bb] = new SparseVector(V);
             }
-            updateLexicalRegression(true);
+            updateLexicalRegression();
             outputInitialLexicalRegression(lexregFile);
         }
 
         // update lexical scores
         updateAuthorBillLexicalScores();
 
+    }
+
+    private void outputInitialLexicalRegression(File outputFile) {
+        if (verbose) {
+            logln("--- Outputing initial lexical regression to " + outputFile);
+        }
+        try {
+            StringBuilder lexStr = new StringBuilder();
+            lexStr.append(B).append("\n");
+            for (int bb = 0; bb < B; bb++) {
+                lexStr.append(bb).append("\n");
+                lexStr.append(MinMaxNormalizer.output(normalizers[bb])).append("\n");
+                lexStr.append(SparseVector.output(lexicalParams[bb])).append("\n");
+            }
+            BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
+            writer.write(lexStr.toString());
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while outputing to " + outputFile);
+        }
+    }
+
+    private void inputInitialLexicalRegression(File inputFile) {
+        if (verbose) {
+            logln("--- Inputing initial lexical regression from " + inputFile);
+        }
+        try {
+            this.normalizers = new MinMaxNormalizer[B];
+            this.lexicalParams = new SparseVector[B];
+
+            BufferedReader reader = IOUtils.getBufferedReader(inputFile);
+            int numBills = Integer.parseInt(reader.readLine());
+            if (numBills != B) {
+                throw new MismatchRuntimeException(numBills, B);
+            }
+            for (int bb = 0; bb < B; bb++) {
+                int bIdx = Integer.parseInt(reader.readLine());
+                if (bb != bIdx) {
+                    throw new MismatchRuntimeException(bIdx, bb);
+                }
+                this.normalizers[bb] = MinMaxNormalizer.input(reader.readLine());
+                this.lexicalParams[bb] = SparseVector.input(reader.readLine());
+            }
+            reader.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while inputing from " + inputFile);
+        }
     }
 
     protected void updateAuthorBillLexicalScores() {
@@ -797,14 +833,6 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             issueNode.initializeGlobalTheta();
             issueNode.initializeGlobalPi();
         }
-
-        this.xy = new double[B][K + 1];
-        if (lexReg) {
-            this.lexicalParams = new SparseVector[B];
-            for (int bb = 0; bb < B; bb++) {
-                this.lexicalParams[bb] = new SparseVector(V);
-            }
-        }
     }
 
     protected void initializeDataStructure() {
@@ -837,10 +865,11 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     }
 
     protected void initializeXY() {
-        this.xy = new double[B][K + 1];
+        this.xy = new SparseVector[B];
         for (int bb = 0; bb < B; bb++) {
+            this.xy[bb] = new SparseVector(K + 1);
             for (int kk = 0; kk < K + 1; kk++) {
-                this.xy[bb][kk] = SamplerUtils.getGaussian(0.0, ipSigma);
+                this.xy[bb].set(kk, SamplerUtils.getGaussian(0.0, 3.0));
             }
         }
     }
@@ -884,13 +913,14 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 } else {
                     logln("--- Sampling. " + str);
                 }
+                evaluate();
             }
 
             updateEtas();
             updateXY();
             sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED);
             if (lexReg) {
-                updateLexicalRegression(false);
+                updateLexicalRegression();
             }
 
             if (debug) {
@@ -932,10 +962,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             node.getContent().increment(words[dd][nn]);
         }
         if (addToData) {
-            if (authorIssueScores != null) {
-                int author = authors[dd];
-                authorIssueScores[author].change(node.issue, node.eta / authorTokenCounts[author]);
-            }
+            int author = authors[dd];
+            authorIssueScores[author].change(node.issue, node.eta / authorTokenCounts[author]);
+
             node.tokenCounts.increment(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -957,10 +986,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     private void removeToken(int dd, int nn, Node node,
             boolean removeFromData, boolean removeFromModel) {
         if (removeFromData) {
-            if (authorIssueScores != null) {
-                int author = authors[dd];
-                authorIssueScores[author].change(node.issue, -node.eta / authorTokenCounts[author]);
-            }
+            int author = authors[dd];
+            authorIssueScores[author].change(node.issue, -node.eta / authorTokenCounts[author]);
+
             node.tokenCounts.decrement(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -1191,9 +1219,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         double resLlh = 0.0;
         for (int bb = 0; bb < B; bb++) {
             if (isValidVote(aa, bb)) {
-                double dotprod = xy[bb][K] + node.eta / authorTokenCounts[aa];
-                for (int kk = 0; kk < K; kk++) {
-                    dotprod += authorIssueScores[aa].get(kk) * xy[bb][kk];
+                double dotprod = xy[bb].get(K)
+                        + xy[bb].get(node.issue) * node.eta / authorTokenCounts[aa];
+                for (int kk : authorIssueScores[aa].getIndices()) {
+                    dotprod += authorIssueScores[aa].get(kk) * xy[bb].get(kk);
                 }
                 if (lexReg) {
                     dotprod += authorBillLexicalScores[aa].get(bb);
@@ -1201,7 +1230,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 resLlh += getVote(aa, bb) * dotprod - Math.log(1 + Math.exp(dotprod));
             }
         }
-        return resLlh / B;
+        return resLlh;
     }
 
     /**
@@ -1222,7 +1251,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         }
 
         OWLQN minimizer = new OWLQN();
-        minimizer.setQuiet(!isReporting);
+        minimizer.setQuiet(false);
         minimizer.setMaxIters(100);
         EtaDiffFunc diff = new EtaDiffFunc(nodeList);
         minimizer.minimize(diff, etas, 0.0);
@@ -1256,7 +1285,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             minimizer.setQuiet(true);
             minimizer.setMaxIters(100);
             XYDiffFunc xydiff = new XYDiffFunc(bb);
-            minimizer.minimize(xydiff, xy[bb], 0.0);
+            double[] tempXY = xy[bb].dense();
+            minimizer.minimize(xydiff, tempXY, 0.0);
+            xy[bb] = new SparseVector(tempXY);
         }
 
         long eTime = System.currentTimeMillis() - sTime;
@@ -1266,17 +1297,13 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         return eTime;
     }
 
-    /**
-     * Update lexical regression parameters.
-     *
-     * @return Elapsed time
-     */
-    private long updateLexicalRegression(boolean initial) {
+    private long updateLexicalRegression() {
         if (isReporting) {
             logln("+++ Updating lexical regression parameters ...");
         }
 
         long sTime = System.currentTimeMillis();
+
         for (int bb = 0; bb < B; bb++) {
             if (isReporting) {
                 logln("+++ --- Updating bb = " + bb + " / " + B);
@@ -1284,14 +1311,11 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             OWLQN minimizer = new OWLQN();
             minimizer.setQuiet(!isReporting);
             minimizer.setMaxIters(100);
-            LexicalDiffFunc diff = new LexicalDiffFunc(bb, initial);
+            LexicalDiffFunc diff = new LexicalDiffFunc(bb);
             double[] params = lexicalParams[bb].dense();
-            minimizer.minimize(diff, params, l1);
+            minimizer.minimize(diff, params, lexl1);
             lexicalParams[bb] = new SparseVector(params);
         }
-
-        // update
-        updateAuthorBillLexicalScores();
 
         long eTime = System.currentTimeMillis() - sTime;
         if (isReporting) {
@@ -1306,9 +1330,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         for (int aa = 0; aa < A; aa++) {
             for (int bb = 0; bb < B; bb++) {
                 if (isValidVote(aa, bb)) {
-                    double dotprod = xy[bb][K];
+                    double dotprod = xy[bb].get(K);
                     for (int kk = 0; kk < K; kk++) {
-                        dotprod += authorIssueScores[aa].get(kk) * xy[bb][kk];
+                        dotprod += authorIssueScores[aa].get(kk) * xy[bb].get(kk);
                     }
                     if (lexReg) {
                         dotprod += this.authorBillLexicalScores[aa].get(bb);
@@ -1335,55 +1359,6 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         logln(msg + ". Validation not implemented!");
     }
 
-    private void outputInitialLexicalRegression(File outputFile) {
-        if (verbose) {
-            logln("--- Outputing initial lexical regression to " + outputFile);
-        }
-        try {
-            StringBuilder lexStr = new StringBuilder();
-            lexStr.append(B).append("\n");
-            for (int bb = 0; bb < B; bb++) {
-                lexStr.append(bb).append("\n");
-                lexStr.append(MinMaxNormalizer.output(normalizers[bb])).append("\n");
-                lexStr.append(SparseVector.output(lexicalParams[bb])).append("\n");
-            }
-            BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
-            writer.write(lexStr.toString());
-            writer.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-            throw new RuntimeException("Exception while outputing to " + outputFile);
-        }
-    }
-
-    private void inputInitialLexicalRegression(File inputFile) {
-        if (verbose) {
-            logln("--- Inputing initial lexical regression from " + inputFile);
-        }
-        try {
-            this.normalizers = new MinMaxNormalizer[B];
-            this.lexicalParams = new SparseVector[B];
-
-            BufferedReader reader = IOUtils.getBufferedReader(inputFile);
-            int numBills = Integer.parseInt(reader.readLine());
-            if (numBills != B) {
-                throw new MismatchRuntimeException(numBills, B);
-            }
-            for (int bb = 0; bb < B; bb++) {
-                int bIdx = Integer.parseInt(reader.readLine());
-                if (bb != bIdx) {
-                    throw new MismatchRuntimeException(bIdx, bb);
-                }
-                this.normalizers[bb] = MinMaxNormalizer.input(reader.readLine());
-                this.lexicalParams[bb] = SparseVector.input(reader.readLine());
-            }
-            reader.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-            throw new RuntimeException("Exception while inputing from " + inputFile);
-        }
-    }
-
     @Override
     public void outputState(String filepath) {
         if (verbose) {
@@ -1393,12 +1368,8 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         // bills
         StringBuilder billStr = new StringBuilder();
         for (int bb = 0; bb < B; bb++) {
-            for (int kk = 0; kk < xy[bb].length; kk++) {
-                billStr.append(bb).append("\t")
-                        .append(this.billIndices.get(bb)).append("\t")
-                        .append(kk).append("\t")
-                        .append(xy[bb][kk]).append("\n");
-            }
+            billStr.append(bb).append("\n");
+            billStr.append(SparseVector.output(xy[bb])).append("\n");
         }
 
         // model string
@@ -1525,23 +1496,13 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         try {
             String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
             BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + ".bill");
-            xy = new double[B][K + 1];
+            xy = new SparseVector[B];
             for (int bb = 0; bb < B; bb++) {
-                for (int kk = 0; kk < K + 1; kk++) {
-                    String[] sline = reader.readLine().split("\t");
-                    if (Integer.parseInt(sline[0]) != bb) {
-                        throw new MismatchRuntimeException(Integer.parseInt(sline[0]), bb);
-                    }
-                    if (Integer.parseInt(sline[1]) != billIndices.get(bb)) {
-                        throw new MismatchRuntimeException(Integer.parseInt(sline[1]),
-                                billIndices.get(bb));
-                    }
-                    if (Integer.parseInt(sline[2]) != kk) {
-                        throw new MismatchRuntimeException(Integer.parseInt(sline[2]), kk);
-                    }
-
-                    xy[bb][kk] = Double.parseDouble(sline[3]);
+                int bIdx = Integer.parseInt(reader.readLine());
+                if (bIdx != bb) {
+                    throw new MismatchRuntimeException(bIdx, bb);
                 }
+                xy[bb] = SparseVector.input(reader.readLine());
             }
             reader.close();
         } catch (Exception e) {
@@ -1905,53 +1866,12 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
         }
     }
 
-    public SparseVector[] getAuthorFeatures() {
-        ArrayList<Node> nodeList = getNodeList();
-        int N = nodeList.size();
-
-        // get author node proportions
-        SparseVector[] authorNodeProps = new SparseVector[A];
-        for (int aa = 0; aa < A; aa++) {
-            authorNodeProps[aa] = new SparseVector(N);
-        }
-        for (int dd = 0; dd < z.length; dd++) {
-            int aa = authors[dd];
-            for (Node item : z[dd]) {
-                int nodeIdx = nodeList.indexOf(item);
-                authorNodeProps[aa].change(nodeIdx, 1.0);
-            }
-        }
-        for (int aa = 0; aa < A; aa++) {
-            authorNodeProps[aa].scale(1.0 / authorTokenCounts[aa]);
-        }
-
-        // get author features
-        SparseVector[] authorFeatures = new SparseVector[A];
-        for (int aa = 0; aa < A; aa++) {
-            authorFeatures[aa] = new SparseVector(2 * N + 1);
-        }
-        for (int aa = 0; aa < A; aa++) {
-            double idealPoint = 0.0;
-            for (int kk = 0; kk < N; kk++) {
-                double val = authorNodeProps[aa].get(kk) * nodeList.get(kk).eta;
-                idealPoint += val;
-                authorFeatures[aa].set(kk, authorNodeProps[aa].get(kk));
-                authorFeatures[aa].set(N + kk, val);
-            }
-            authorFeatures[aa].set(2 * N, idealPoint);
-        }
-
-        return authorFeatures;
-    }
-
     class LexicalDiffFunc implements DiffFunction {
 
         private final int bb;
-        private final boolean initial;
 
-        public LexicalDiffFunc(int billIdx, boolean initial) {
+        public LexicalDiffFunc(int billIdx) {
             this.bb = billIdx;
-            this.initial = initial;
         }
 
         @Override
@@ -1964,12 +1884,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             double llh = 0.0;
             for (int aa = 0; aa < A; aa++) {
                 if (isValidVote(aa, bb)) {
-                    double dotprod = 0.0;
-                    if (!initial) {
-                        dotprod += xy[bb][K];
-                        for (int kk = 0; kk < K; kk++) {
-                            dotprod += authorIssueScores[aa].get(kk) * xy[bb][kk];
-                        }
+                    double dotprod = xy[bb].get(K);
+                    for (int kk = 0; kk < K; kk++) {
+                        dotprod += authorIssueScores[aa].get(kk) * xy[bb].get(kk);
                     }
                     dotprod += authorLexDsgMatrix[aa].dotProduct(w);
                     llh += getVote(aa, bb) * dotprod - Math.log(Math.exp(dotprod) + 1);
@@ -1977,10 +1894,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             }
 
             double val = -llh;
-            if (l2 > 0) {
+            if (lexl2 > 0) {
                 double reg = 0.0;
                 for (int ii = 0; ii < w.length; ii++) {
-                    reg += l2 * w[ii] * w[ii];
+                    reg += 0.5 * lexl2 * w[ii] * w[ii];
                 }
                 val += reg;
             }
@@ -1992,12 +1909,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             double[] grads = new double[w.length];
             for (int aa = 0; aa < A; aa++) {
                 if (isValidVote(aa, bb)) {
-                    double dotprod = 0.0;
-                    if (!initial) {
-                        dotprod += xy[bb][K];
-                        for (int kk = 0; kk < K; kk++) {
-                            dotprod += authorIssueScores[aa].get(kk) * xy[bb][kk];
-                        }
+                    double dotprod = xy[bb].get(K);
+                    for (int kk = 0; kk < K; kk++) {
+                        dotprod += authorIssueScores[aa].get(kk) * xy[bb].get(kk);
                     }
                     dotprod += authorLexDsgMatrix[aa].dotProduct(w);
                     double score = Math.exp(dotprod);
@@ -2008,9 +1922,9 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 }
             }
 
-            if (l2 > 0) {
+            if (lexl2 > 0) {
                 for (int kk = 0; kk < w.length; kk++) {
-                    grads[kk] += 2 * l2 * w[kk];
+                    grads[kk] += lexl2 * w[kk];
                 }
             }
             return grads;
@@ -2051,16 +1965,15 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 // compute author score at each 1st-level node
                 double[] authorScores = new double[K];
                 for (int ii = 0; ii < domainDimension(); ii++) {
-                    Node node = nodeList.get(ii);
-                    authorScores[node.issue] += authorEmpNodeDists[aa].get(ii) * w[ii];
+                    int kk = nodeList.get(ii).issue;
+                    authorScores[kk] += authorEmpNodeDists[aa].get(ii) * w[ii];
                 }
-
                 // compute llh
                 for (int bb = 0; bb < B; bb++) {
                     if (isValidVote(aa, bb)) {
-                        double dotprod = xy[bb][K];
+                        double dotprod = xy[bb].get(K);
                         for (int kk = 0; kk < K; kk++) {
-                            dotprod += authorScores[kk] * xy[bb][kk];
+                            dotprod += authorScores[kk] * xy[bb].get(kk);
                         }
                         if (lexReg) {
                             dotprod += authorBillLexicalScores[aa].get(bb);
@@ -2069,16 +1982,13 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                     }
                 }
             }
-
             // prior
             double reg = 0.0;
             for (int ii = 0; ii < w.length; ii++) {
-                Node node = this.nodeList.get(ii);
-                reg += 0.5 * w[ii] * w[ii] / getSigma(node.getLevel());
+                reg += 0.5 * w[ii] * w[ii] / getSigma(nodeList.get(ii).getLevel());
             }
 
-            double val = -llh + reg;
-            return val;
+            return -llh + reg;
         }
 
         @Override
@@ -2088,16 +1998,15 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                 // compute author score at each 1st-level node
                 double[] authorScores = new double[K];
                 for (int ii = 0; ii < domainDimension(); ii++) {
-                    Node node = nodeList.get(ii);
-                    authorScores[node.issue] += authorEmpNodeDists[aa].get(ii) * w[ii];
+                    int kk = nodeList.get(ii).issue;
+                    authorScores[kk] += authorEmpNodeDists[aa].get(ii) * w[ii];
                 }
-
                 // compute llh
                 for (int bb = 0; bb < B; bb++) {
                     if (isValidVote(aa, bb)) {
-                        double dotprod = xy[bb][K];
+                        double dotprod = xy[bb].get(K);
                         for (int kk = 0; kk < K; kk++) {
-                            dotprod += authorScores[kk] * xy[bb][kk];
+                            dotprod += authorScores[kk] * xy[bb].get(kk);
                         }
                         if (lexReg) {
                             dotprod += authorBillLexicalScores[aa].get(bb);
@@ -2105,17 +2014,15 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                         double score = Math.exp(dotprod);
                         double prob = score / (1 + score);
                         for (int ii = 0; ii < grads.length; ii++) {
-                            grads[ii] -= xy[bb][nodeList.get(ii).issue]
+                            grads[ii] -= xy[bb].get(nodeList.get(ii).issue)
                                     * authorEmpNodeDists[aa].get(ii) * (getVote(aa, bb) - prob);
                         }
                     }
                 }
             }
-
             // prior
             for (int ii = 0; ii < w.length; ii++) {
-                Node node = this.nodeList.get(ii);
-                grads[ii] += w[ii] / getSigma(node.getLevel());
+                grads[ii] += w[ii] / getSigma(nodeList.get(ii).getLevel());
             }
             return grads;
         }
@@ -2151,8 +2058,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
             }
 
             double reg = 0.0;
-            for (int ii = 0; ii < w.length; ii++) {
-                reg += 0.5 * w[ii] * w[ii] / ipSigma;
+            if (l2 > 0) {
+                for (int ii = 0; ii < w.length; ii++) {
+                    reg += 0.5 * l2 * w[ii] * w[ii];
+                }
             }
 
             double val = -llh + reg;
@@ -2179,8 +2088,10 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
                     grads[K] -= 1.0 * (getVote(aa, bb) - prob);
                 }
             }
-            for (int kk = 0; kk < w.length; kk++) {
-                grads[kk] += w[kk] / ipSigma;
+            if (l2 > 0) {
+                for (int kk = 0; kk < w.length; kk++) {
+                    grads[kk] += l2 * w[kk];
+                }
             }
             return grads;
         }
