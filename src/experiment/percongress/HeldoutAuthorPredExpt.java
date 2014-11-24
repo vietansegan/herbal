@@ -102,6 +102,9 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "author-tf-idf-nn":
                 runAuthorTFIDFNN(outputFolder);
                 break;
+            case "bayesian-mult-ideal-point":
+                runBayesianMultIdealPoint(outputFolder);
+                break;
             case "slda-ideal-point":
                 runSLDAIdealPoint(outputFolder);
                 break;
