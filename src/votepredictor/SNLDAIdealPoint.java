@@ -1,7 +1,6 @@
 package votepredictor;
 
 import cc.mallet.optimize.LimitedMemoryBFGS;
-import core.AbstractSampler;
 import data.Author;
 import data.Vote;
 import java.io.BufferedReader;
@@ -33,7 +32,7 @@ import util.govtrack.GTLegislator;
  *
  * @author vietan
  */
-public class SNLDAIdealPoint extends AbstractSampler {
+public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
 
     protected double[] alphas;          // [L-1]
     protected double[] betas;           // [L]
@@ -45,21 +44,10 @@ public class SNLDAIdealPoint extends AbstractSampler {
     public int numSteps = 20;
     public double epsilon = 0.01;
     // input
-    protected int[][] words;
-    protected ArrayList<Integer> docIndices;    // potentially not needed
-    protected ArrayList<Integer> authorIndices; // potentially not needed
-    protected ArrayList<Integer> billIndices;   // potentially not needed
-    protected int[] authors; // [D]: author of each document
-    protected int[][] votes;
-    protected boolean[][] validVotes;
     protected double[][] issuePhis;
-    protected int V; // vocabulary size
     protected int J; // number of frames per issue
     // derive
     protected int K; // number of issues
-    protected int D; // number of documents
-    protected int A; // number of authors
-    protected int B; // number of bills
     protected int L; // number of levels
     // configuration
     protected PathAssumption pathAssumption;
@@ -72,14 +60,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
     protected double[] y; // [B]
     protected double[] authorMeans;
     // internal
-    protected int numTokens;
     protected int numTokensChanged;
     protected double[] background;
     protected int numTokensAccepted;
-    protected int[][] authorDocIndices; // [A] x [D_a]: store the list of documents for each author
-    protected int[] authorTokenCounts;  // [A]: store the total #tokens for each author
-    protected ArrayList<String> authorVocab;
-    protected ArrayList<String> voteVocab;
     protected ArrayList<String> labelVocab;
     protected int posAnchor;
     protected int negAnchor;
@@ -96,14 +79,6 @@ public class SNLDAIdealPoint extends AbstractSampler {
         this.labelVocab = labelVoc;
     }
 
-    public void setAuthorVocab(ArrayList<String> authorVoc) {
-        this.authorVocab = authorVoc;
-    }
-
-    public void setVoteVocab(ArrayList<String> voteVoc) {
-        this.voteVocab = voteVoc;
-    }
-
     public void configure(SNLDAIdealPoint sampler) {
         this.configure(sampler.folder,
                 sampler.V,
@@ -117,6 +92,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 sampler.mu,
                 sampler.sigma,
                 sampler.hasRootTopic,
+                sampler.wordWeightType,
                 sampler.initState,
                 sampler.pathAssumption,
                 sampler.paramOptimized,
@@ -137,6 +113,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
             double mu, // mean of Gaussian for regression parameters
             double sigma, // stadard deviation of Gaussian for regression parameters
             boolean hasRootTopic,
+            WordWeightType wwt,
             InitialState initState,
             PathAssumption pathAssumption,
             boolean paramOpt,
@@ -159,6 +136,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
         this.mu = mu;
         this.sigma = sigma;
         this.hasRootTopic = hasRootTopic;
+        this.wordWeightType = wwt;
 
         this.hyperparams = new ArrayList<Double>();
         this.sampledParams = new ArrayList<ArrayList<Double>>();
@@ -196,6 +174,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
             logln("--- paramopt:\t" + paramOptimized);
             logln("--- initialize:\t" + this.initState);
             logln("--- path assumption:\t" + this.pathAssumption);
+            logln("--- word weight type:\t" + this.wordWeightType);
         }
 
         if (this.alphas.length != L - 1) {
@@ -252,6 +231,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 .append("_m-").append(formatter.format(mu))
                 .append("_s-").append(formatter.format(sigma));
         str.append("_opt-").append(this.paramOptimized);
+        str.append("_wwt-").append(this.wordWeightType);
         str.append("_rt-").append(this.hasRootTopic);
         str.append("_").append(pathAssumption);
         this.name = str.toString();
@@ -297,257 +277,47 @@ public class SNLDAIdealPoint extends AbstractSampler {
     }
 
     /**
-     * Pre-compute useful data statistics.
-     */
-    protected void prepareDataStatistics() {
-        // statistics
-        numTokens = 0;
-        background = new double[V];
-        for (int dd = 0; dd < D; dd++) {
-            numTokens += words[dd].length;
-            for (int nn = 0; nn < words[dd].length; nn++) {
-                background[words[dd][nn]]++;
-            }
-        }
-        for (int vv = 0; vv < V; vv++) {
-            background[vv] /= numTokens;
-        }
-
-        // author document list
-        ArrayList<Integer>[] authorDocList = new ArrayList[A];
-        for (int a = 0; a < A; a++) {
-            authorDocList[a] = new ArrayList<Integer>();
-        }
-        for (int d = 0; d < D; d++) {
-            if (words[d].length > 0) {
-                authorDocList[authors[d]].add(d);
-            }
-        }
-        this.authorDocIndices = new int[A][];
-        this.authorTokenCounts = new int[A];
-        for (int a = 0; a < A; a++) {
-            this.authorDocIndices[a] = new int[authorDocList[a].size()];
-            for (int dd = 0; dd < this.authorDocIndices[a].length; dd++) {
-                this.authorDocIndices[a][dd] = authorDocList[a].get(dd);
-                this.authorTokenCounts[a] += words[authorDocIndices[a][dd]].length;
-            }
-        }
-    }
-
-    /**
-     * Set training data.
-     *
-     * @param docIndices Indices of selected documents
-     * @param words Document words
-     * @param authors Document authors
-     * @param votes All votes
-     * @param authorIndices Indices of training authors
-     * @param billIndices Indices of training bills
-     * @param trainVotes Training votes
-     */
-    public void train(ArrayList<Integer> docIndices,
-            int[][] words,
-            int[] authors,
-            int[][] votes,
-            ArrayList<Integer> authorIndices,
-            ArrayList<Integer> billIndices,
-            boolean[][] trainVotes) {
-        // list of authors
-        this.authorIndices = authorIndices;
-        if (authorIndices == null) {
-            this.authorIndices = new ArrayList<>();
-            for (int aa = 0; aa < votes.length; aa++) {
-                this.authorIndices.add(aa);
-            }
-        }
-        this.A = this.authorIndices.size();
-
-        HashMap<Integer, Integer> inverseAuthorMap = new HashMap<>();
-        for (int ii = 0; ii < A; ii++) {
-            int aa = this.authorIndices.get(ii);
-            inverseAuthorMap.put(aa, ii);
-        }
-
-        // list of bills
-        this.billIndices = billIndices;
-        if (billIndices == null) {
-            this.billIndices = new ArrayList<>();
-            for (int bb = 0; bb < votes[0].length; bb++) {
-                this.billIndices.add(bb);
-            }
-        }
-        this.B = this.billIndices.size();
-
-        this.votes = new int[A][B];
-        this.validVotes = new boolean[A][B];
-        for (int ii = 0; ii < A; ii++) {
-            int aa = this.authorIndices.get(ii);
-            for (int jj = 0; jj < B; jj++) {
-                int bb = this.billIndices.get(jj);
-                this.votes[ii][jj] = votes[aa][bb];
-                this.validVotes[ii][jj] = trainVotes[aa][bb];
-            }
-        }
-
-        this.docIndices = docIndices;
-        if (this.docIndices == null) { // add all documents
-            this.docIndices = new ArrayList<>();
-            for (int dd = 0; dd < words.length; dd++) {
-                this.docIndices.add(dd);
-            }
-        }
-        this.D = this.docIndices.size();
-        this.words = new int[D][];
-        this.authors = new int[D];
-        for (int ii = 0; ii < this.D; ii++) {
-            int dd = this.docIndices.get(ii);
-            this.words[ii] = words[dd];
-            this.authors[ii] = inverseAuthorMap.get(authors[dd]);
-        }
-
-        this.prepareDataStatistics();
-
-        if (verbose) {
-            logln("--- # documents:\t" + D);
-            int numNonEmptyDocs = 0;
-            for (int a = 0; a < A; a++) {
-                numNonEmptyDocs += this.authorDocIndices[a].length;
-            }
-            logln("--- # non-empty documents:\t" + numNonEmptyDocs);
-            int numNonEmptyAuthors = 0;
-            for (int a = 0; a < A; a++) {
-                if (authorDocIndices[a].length != 0) {
-                    numNonEmptyAuthors++;
-                }
-            }
-            logln("--- # speakers:\t" + A);
-            logln("--- # non-empty speakers:\t" + numNonEmptyAuthors);
-            logln("--- # tokens:\t" + numTokens
-                    + ", " + StatUtils.sum(authorTokenCounts));
-        }
-    }
-
-    /**
      * Make prediction on held-out votes of known legislators and known votes.
      *
-     * @param testVotes Indicators of test votes
      * @return Predicted probabilities
      */
-    public SparseVector[] test(boolean[][] testVotes) {
-        SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < predictions.length; aa++) {
-            predictions[aa] = new SparseVector();
-            for (int bb = 0; bb < testVotes[aa].length; bb++) {
-                if (testVotes[aa][bb]) {
+    public SparseVector[] predictInMatrix() {
+        SparseVector[] predictions = new SparseVector[validVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(validVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = billIndices.get(bb);
+                if (isValidVote(aa, bb)) {
                     double score = Math.exp(u[aa] * x[bb] + y[bb]);
-
-                    if (score == 0) {
-                        System.out.println("aa = " + aa + ". " + u[aa]);
-                        System.out.println("bb = " + bb + ". " + x[bb] + ". " + y[bb]);
-                        System.out.println("raw: " + u[aa] * x[bb] + y[bb]);
-                        throw new RuntimeException();
-                    }
-
-                    double val = score / (1 + score);
-                    predictions[aa].set(bb, val);
+                    double prob = score / (1.0 + score);
+                    predictions[author].set(bill, prob);
                 }
             }
         }
         return predictions;
     }
 
-    public void test(ArrayList<Integer> docIndices,
-            int[][] words,
-            int[] authors,
-            ArrayList<Integer> authorIndices,
-            boolean[][] testVotes) {
-        // list of authors
-        this.authorIndices = authorIndices;
-        if (authorIndices == null) {
-            this.authorIndices = new ArrayList<>();
-            for (int aa = 0; aa < testVotes.length; aa++) {
-                this.authorIndices.add(aa);
-            }
-        }
-        this.A = this.authorIndices.size();
-
-        HashMap<Integer, Integer> inverseAuthorMap = new HashMap<>();
-        for (int ii = 0; ii < A; ii++) {
-            int aa = this.authorIndices.get(ii);
-            inverseAuthorMap.put(aa, ii);
-        }
-
-        // list of bills
-        this.billIndices = new ArrayList<>();
-        for (int bb = 0; bb < testVotes[0].length; bb++) {
-            this.billIndices.add(bb);
-        }
-        this.B = this.billIndices.size();
-
-        this.docIndices = docIndices;
-        if (this.docIndices == null) { // add all documents
-            this.docIndices = new ArrayList<>();
-            for (int dd = 0; dd < words.length; dd++) {
-                this.docIndices.add(dd);
-            }
-        }
-        this.D = this.docIndices.size();
-        this.words = new int[D][];
-        this.authors = new int[D];
-        for (int ii = 0; ii < this.D; ii++) {
-            int dd = this.docIndices.get(ii);
-            this.words[ii] = words[dd];
-            this.authors[ii] = inverseAuthorMap.get(authors[dd]);
-        }
-
-        this.prepareDataStatistics();
-
-        if (verbose) {
-            logln("--- # documents:\t" + D);
-            int numNonEmptyDocs = 0;
-            for (int a = 0; a < A; a++) {
-                numNonEmptyDocs += this.authorDocIndices[a].length;
-            }
-            logln("--- # non-empty documents:\t" + numNonEmptyDocs);
-            int numNonEmptyAuthors = 0;
-            for (int a = 0; a < A; a++) {
-                if (authorDocIndices[a].length != 0) {
-                    numNonEmptyAuthors++;
-                }
-            }
-            logln("--- # speakers:\t" + A);
-            logln("--- # non-empty speakers:\t" + numNonEmptyAuthors);
-            logln("--- # tokens:\t" + numTokens
-                    + ", " + StatUtils.sum(authorTokenCounts));
-        }
+    /**
+     * Make predictions on held-out votes of unknown legislators on known votes.
+     *
+     * @return Predicted probabilities
+     */
+    public SparseVector[] predictOutMatrix() {
+        this.u = this.authorMeans;
+        return predictInMatrix();
     }
 
     /**
-     * Make prediction for held-out voters using their text using the final
-     * learned model. This can only make predictions on existing bills, so no
-     * billIndices are needed.
+     * Sample topic assignments for test documents and make predictions.
      *
-     * @param stateFile State file
-     * @param docIndices List of selected document indices
-     * @param words Documents
-     * @param authors Voters
-     * @param authorIndices List of test (held-out) voters
-     * @param testVotes Indices of test votes
+     * @param stateFile
      * @param predictionFile
-     * @param partAuthorScoreFile
-     * @param partVoteScoreFile
      * @param assignmentFile
-     * @return Predicted probabilities
+     * @return predictions
      */
     public SparseVector[] test(File stateFile,
-            ArrayList<Integer> docIndices,
-            int[][] words,
-            int[] authors,
-            ArrayList<Integer> authorIndices,
-            boolean[][] testVotes,
             File predictionFile,
-            File partAuthorScoreFile,
-            File partVoteScoreFile,
             File assignmentFile) {
         if (authorIndices == null) {
             throw new RuntimeException("List of test authors is null");
@@ -556,73 +326,25 @@ public class SNLDAIdealPoint extends AbstractSampler {
         if (stateFile == null) {
             stateFile = getFinalStateFile();
         }
+        setTestConfigurations(); // set up test
 
         if (verbose) {
             logln("Setting up test ...");
-            logln("--- state file: " + stateFile);
+            logln("--- test burn-in: " + testBurnIn);
+            logln("--- test maximum number of iterations: " + testMaxIter);
+            logln("--- test sample lag: " + testSampleLag);
+            logln("--- test report interval: " + testRepInterval);
         }
 
-        this.setTestConfigurations(100, 250, 10, 5);
+        // sample on test data
+        sampleNewDocuments(stateFile, assignmentFile);
 
-        // set up test data
-        this.test(docIndices, words, authors, authorIndices, testVotes);
-
-        // sample assignments for new documents
-        this.sampleNewDocuments(getFinalStateFile(), assignmentFile);
-
-        // predict author scores
-        double[] predAuthorScores = new double[this.A];
-        double[] predAuthorDens = new double[this.A];
-        Stack<Node> stack = new Stack<>();
-        stack.add(root);
-        while (!stack.isEmpty()) {
-            Node node = stack.pop();
-            for (Node child : node.getChildren()) {
-                stack.add(child);
-            }
-            for (int ii : node.tokenCounts.getIndices()) {
-                int count = node.tokenCounts.getCount(ii);
-                int author = authors[docIndices.get(ii)];
-                int aa = this.authorIndices.indexOf(author);
-                if (aa < 0) {
-                    throw new RuntimeException("aa = " + aa + ". " + author);
-                }
-                predAuthorScores[aa] += count * node.eta;
-                predAuthorDens[aa] += count;
-            }
-        }
-
-        this.authorMeans = new double[this.A];
-        for (int aa = 0; aa < this.A; aa++) {
-            this.authorMeans[aa] = predAuthorScores[aa] / predAuthorDens[aa];
-        }
-
-        // predict vote probabilities
-        SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < this.A; aa++) {
-            int author = this.authorIndices.get(aa);
-            predictions[author] = new SparseVector(testVotes[author].length);
-            for (int bb = 0; bb < testVotes[author].length; bb++) {
-                if (testVotes[author][bb]) {
-                    double score = Math.exp(authorMeans[aa] * x[bb] + y[bb]);
-                    double val = score / (1 + score);
-                    predictions[author].set(bb, val);
-                }
-            }
-        }
+        // make prediction on votes of unknown voters
+        SparseVector[] predictions = predictOutMatrix();
 
         if (predictionFile != null) { // output predictions
             AbstractVotePredictor.outputPredictions(predictionFile, null, predictions);
         }
-
-        if (partAuthorScoreFile != null) { // output author scores
-            AbstractVotePredictor.outputAuthorScores(partAuthorScoreFile, null, u);
-        }
-
-        if (partVoteScoreFile != null) { // output vote scores
-            AbstractVotePredictor.outputVoteScores(partVoteScoreFile, null, x, y);
-        }
-
         return predictions;
     }
 
@@ -649,7 +371,6 @@ public class SNLDAIdealPoint extends AbstractSampler {
         // input model
         inputModel(stateFile.getAbsolutePath());
         inputBillScore(stateFile.getAbsolutePath());
-
         // clear all existing assignments from training data
         Stack<Node> stack = new Stack<>();
         stack.add(root);
@@ -662,11 +383,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
             node.subtreeTokenCounts = new SparseCount();
             node.getContent().clear();
         }
-
-        z = new Node[D][];
-        for (int d = 0; d < D; d++) {
-            z[d] = new Node[words[d].length];
-        }
+        initializeDataStructure();
 
         // sample
         for (iter = 0; iter < testMaxIter; iter++) {
@@ -714,7 +431,8 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 ArrayList<String> contentStrs = new ArrayList<>();
                 contentStrs.add(assignStr.toString());
 
-                String filename = IOUtils.removeExtension(IOUtils.getFilename(assignmentFile.getAbsolutePath()));
+                String filename = IOUtils.removeExtension(IOUtils.getFilename(
+                        assignmentFile.getAbsolutePath()));
                 ArrayList<String> entryFiles = new ArrayList<>();
                 entryFiles.add(filename + AssignmentFileExt);
 
@@ -851,10 +569,10 @@ public class SNLDAIdealPoint extends AbstractSampler {
             int withCount = 0;
             int againstCount = 0;
             for (int bb = 0; bb < B; bb++) {
-                if (validVotes[aa][bb]) {
-                    if (votes[aa][bb] == Vote.WITH) {
+                if (isValidVote(aa, bb)) {
+                    if (getVote(aa, bb) == Vote.WITH) {
                         withCount++;
-                    } else if (votes[aa][bb] == Vote.AGAINST) {
+                    } else if (getVote(aa, bb) == Vote.AGAINST) {
                         againstCount++;
                     }
                 }
@@ -926,9 +644,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 }
             }
 
-            long topicTime = sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED);
             long etaTime = updateEtas();
             long uxyTime = updateUXY();
+            long topicTime = sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED);
 
             if (isReporting) {
                 logln("\n" + printGlobalTree() + "\n");
@@ -985,9 +703,8 @@ public class SNLDAIdealPoint extends AbstractSampler {
             node.getContent().increment(words[dd][nn]);
         }
         if (addToData) {
-            if (authorMeans != null) {
-                authorMeans[authors[dd]] += node.eta / authorTokenCounts[authors[dd]];
-            }
+            authorMeans[authors[dd]] += node.eta * wordWeights[words[dd][nn]]
+                    / authorTotalWordWeights[authors[dd]];
             node.tokenCounts.increment(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -1010,7 +727,8 @@ public class SNLDAIdealPoint extends AbstractSampler {
             boolean removeFromData, boolean removeFromModel) {
         if (removeFromData) {
             if (authorMeans != null) {
-                authorMeans[authors[dd]] -= node.eta / authorTokenCounts[authors[dd]];
+                authorMeans[authors[dd]] -= node.eta * wordWeights[words[dd][nn]]
+                        / authorTotalWordWeights[authors[dd]];
             }
             node.tokenCounts.decrement(dd);
             Node tempNode = node;
@@ -1036,9 +754,12 @@ public class SNLDAIdealPoint extends AbstractSampler {
      */
     protected long sampleZs(boolean removeFromModel, boolean addToModel,
             boolean removeFromData, boolean addToData, boolean observe) {
+        if (isReporting) {
+            logln("+++ Sampling assignments ...");
+        }
+        long sTime = System.currentTimeMillis();
         numTokensChanged = 0;
         numTokensAccepted = 0;
-        long sTime = System.currentTimeMillis();
         for (int dd = 0; dd < D; dd++) {
             for (int nn = 0; nn < words[dd].length; nn++) {
                 // remove
@@ -1074,7 +795,16 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 addToken(dd, nn, z[dd][nn], addToData, addToModel);
             }
         }
-        return System.currentTimeMillis() - sTime;
+        long eTime = System.currentTimeMillis() - sTime;
+        if (isReporting) {
+            logln("--- --- time: " + eTime);
+            logln("--- --- # tokens: " + numTokens
+                    + ". # tokens changed: " + numTokensChanged
+                    + " (" + MiscUtils.formatDouble((double) numTokensChanged / numTokens) + ")"
+                    + ". # tokens accepted: " + numTokensAccepted
+                    + " (" + MiscUtils.formatDouble((double) numTokensAccepted / numTokens) + ")");
+        }
+        return eTime;
     }
 
     /**
@@ -1136,7 +866,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
         double[] logprobs = getTransLogProbabilities(dd, nn, node, node);
         logprobs[ACTUAL_INDEX] = Math.log(node.getPhi(words[dd][nn]));
         if (observed) {
-            logprobs[ACTUAL_INDEX] += getResponseLogLikelihood(authors[dd], node);
+            logprobs[ACTUAL_INDEX] += getResponseLogLikelihood(authors[dd], words[dd][nn], node);
         }
         Node source = node.getParent();
         Node target = node;
@@ -1224,8 +954,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
      * @param node The node
      * @return
      */
-    private double getResponseLogLikelihood(int author, Node node) {
-        double aMean = authorMeans[author] + node.eta / authorTokenCounts[author];
+    private double getResponseLogLikelihood(int author, int word, Node node) {
+        double aMean = authorMeans[author] + node.eta * wordWeights[word]
+                / authorTotalWordWeights[author];
         double resLLh = StatUtils.logNormalProbability(u[author], aMean, Math.sqrt(rho));
         return resLLh;
     }
@@ -1236,6 +967,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
      * @return Elapsed time
      */
     public long updateEtas() {
+        if (isReporting) {
+            logln("+++ Updating etas ...");
+        }
         long sTime = System.currentTimeMillis();
 
         // list of nodes
@@ -1247,13 +981,12 @@ public class SNLDAIdealPoint extends AbstractSampler {
         for (int aa = 0; aa < A; aa++) {
             designMatrix[aa] = new SparseVector(N);
         }
-        for (int kk = 0; kk < N; kk++) {
-            Node node = nodeList.get(kk);
-            for (int dd : node.tokenCounts.getIndices()) {
-                int count = node.tokenCounts.getCount(dd);
-                int author = authors[dd];
-                double val = (double) count / authorTokenCounts[author];
-                designMatrix[author].change(kk, val);
+        for (int dd = 0; dd < D; dd++) {
+            int aa = authors[dd];
+            for (int nn = 0; nn < words[dd].length; nn++) {
+                int kk = nodeList.indexOf(z[dd][nn]);
+                designMatrix[aa].change(kk, wordWeights[words[dd][nn]]
+                        / authorTotalWordWeights[aa]);
             }
         }
 
@@ -1289,7 +1022,11 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 authorMeans[aa] += designMatrix[aa].get(kk) * nodeList.get(kk).eta;
             }
         }
-        return System.currentTimeMillis() - sTime;
+        long eTime = System.currentTimeMillis() - sTime;
+        if (isReporting) {
+            logln("--- --- time: " + eTime);
+        }
+        return eTime;
     }
 
     /**
@@ -1319,12 +1056,19 @@ public class SNLDAIdealPoint extends AbstractSampler {
      * @return Elapsed time
      */
     private long updateUXY() {
+        if (isReporting) {
+            logln("+++ Updating UXY ...");
+        }
         long sTime = System.currentTimeMillis();
         for (int ii = 0; ii < numSteps; ii++) {
             updateUs();
             updateXYs();
         }
-        return System.currentTimeMillis() - sTime;
+        long eTime = System.currentTimeMillis() - sTime;
+        if (isReporting) {
+            logln("--- --- time: " + eTime);
+        }
+        return eTime;
     }
 
     /**
@@ -1334,11 +1078,11 @@ public class SNLDAIdealPoint extends AbstractSampler {
         for (int a = 0; a < A; a++) {
             double grad = 0.0;
             // likelihood
-            for (int b = 0; b < votes[a].length; b++) {
-                if (validVotes[a][b]) {
+            for (int b = 0; b < B; b++) {
+                if (isValidVote(a, b)) {
                     double score = Math.exp(u[a] * x[b] + y[b]);
                     double prob = score / (1 + score);
-                    grad += x[b] * (votes[a][b] - prob); // only work for 0 and 1
+                    grad += x[b] * (getVote(a, b) - prob); // only work for 0 and 1
                 }
             }
             // prior
@@ -1357,10 +1101,10 @@ public class SNLDAIdealPoint extends AbstractSampler {
             double gradY = 0.0;
             // likelihood
             for (int a = 0; a < A; a++) {
-                if (validVotes[a][b]) {
+                if (isValidVote(a, b)) {
                     double score = Math.exp(u[a] * x[b] + y[b]);
-                    gradX += u[a] * (votes[a][b] - score / (1 + score));
-                    gradY += votes[a][b] - score / (1 + score);
+                    gradX += u[a] * (getVote(a, b) - score / (1 + score));
+                    gradY += getVote(a, b) - score / (1 + score);
                 }
             }
             // prior
@@ -1377,9 +1121,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
         double voteLlh = 0.0;
         for (int ii = 0; ii < A; ii++) {
             for (int jj = 0; jj < B; jj++) {
-                if (validVotes[ii][jj]) {
+                if (isValidVote(ii, jj)) {
                     double score = u[ii] * x[jj] + y[jj];
-                    voteLlh += votes[ii][jj] * score - Math.log(1 + Math.exp(score));
+                    voteLlh += getVote(ii, jj) * score - Math.log(1 + Math.exp(score));
                 }
             }
         }
@@ -1430,6 +1174,9 @@ public class SNLDAIdealPoint extends AbstractSampler {
 
         // model string
         StringBuilder modelStr = new StringBuilder();
+        for (int vv = 0; vv < V; vv++) {
+            modelStr.append(vv).append("\t").append(this.wordWeights[vv]).append("\n");
+        }
         Stack<Node> stack = new Stack<>();
         stack.add(root);
         while (!stack.isEmpty()) {
@@ -1471,8 +1218,8 @@ public class SNLDAIdealPoint extends AbstractSampler {
             ArrayList<String> entryFiles = new ArrayList<>();
             entryFiles.add(filename + ModelFileExt);
             entryFiles.add(filename + AssignmentFileExt);
-            entryFiles.add(filename + ".author");
-            entryFiles.add(filename + ".bill");
+            entryFiles.add(filename + AuthorFileExt);
+            entryFiles.add(filename + BillFileExt);
 
             this.outputZipFile(filepath, contentStrs, entryFiles);
         } catch (Exception e) {
@@ -1503,7 +1250,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
         }
         try {
             String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
-            BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + ".author");
+            BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + AuthorFileExt);
 
             u = new double[A];
             for (int aa = 0; aa < A; aa++) {
@@ -1532,7 +1279,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
         }
         try {
             String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
-            BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + ".bill");
+            BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + BillFileExt);
             x = new double[B];
             y = new double[B];
             for (int bb = 0; bb < B; bb++) {
@@ -1567,6 +1314,16 @@ public class SNLDAIdealPoint extends AbstractSampler {
         try {
             String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
             BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + ModelFileExt);
+            wordWeights = new double[V];
+            for (int vv = 0; vv < V; vv++) {
+                String[] sline = reader.readLine().split("\t");
+                int vIdx = Integer.parseInt(sline[0]);
+                if (vv != vIdx) {
+                    throw new MismatchRuntimeException(vIdx, vv);
+                }
+                wordWeights[vv] = Double.parseDouble(sline[1]);
+            }
+
             HashMap<String, Node> nodeMap = new HashMap<String, Node>();
             String line;
             while ((line = reader.readLine()) != null) {
@@ -1608,6 +1365,7 @@ public class SNLDAIdealPoint extends AbstractSampler {
                 }
                 nodeMap.put(pathStr, node);
             }
+            reader.close();
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Exception while loading model from "
@@ -1917,38 +1675,49 @@ public class SNLDAIdealPoint extends AbstractSampler {
         ArrayList<Node> nodeList = getNodeList();
         int N = nodeList.size();
 
-        // get author node proportions
         SparseVector[] authorNodeProps = new SparseVector[A];
+        SparseVector[] authorNodeWeightedProps = new SparseVector[A];
+        SparseVector[] authorNodePolarizedProps = new SparseVector[A];
+
         for (int aa = 0; aa < A; aa++) {
             authorNodeProps[aa] = new SparseVector(N);
-        }
-        for (int dd = 0; dd < z.length; dd++) {
-            int aa = authors[dd];
-            for (Node item : z[dd]) {
-                int nodeIdx = nodeList.indexOf(item);
-                authorNodeProps[aa].change(nodeIdx, 1.0);
-            }
-        }
-        for (int aa = 0; aa < A; aa++) {
-            authorNodeProps[aa].scale(1.0 / authorTokenCounts[aa]);
+            authorNodeWeightedProps[aa] = new SparseVector(N);
+            authorNodePolarizedProps[aa] = new SparseVector(N);
         }
 
-        // get author features
+        for (int dd = 0; dd < D; dd++) {
+            int aa = authors[dd];
+            for (int nn = 0; nn < words[dd].length; nn++) {
+                int kk = nodeList.indexOf(z[dd][nn]);
+                authorNodeProps[aa].change(kk, 1.0);
+                authorNodeWeightedProps[aa].change(kk, wordWeights[words[dd][nn]]);
+                authorNodePolarizedProps[aa].change(kk, wordWeights[words[dd][nn]]
+                        * z[dd][nn].eta);
+            }
+        }
+
         SparseVector[] authorFeatures = new SparseVector[A];
         for (int aa = 0; aa < A; aa++) {
-            authorFeatures[aa] = new SparseVector(2 * N + 1);
+            authorFeatures[aa] = new SparseVector(3 * N + 1);
         }
         for (int aa = 0; aa < A; aa++) {
-            double idealPoint = 0.0;
+            authorNodeProps[aa].normalize();
             for (int kk = 0; kk < N; kk++) {
-                double val = authorNodeProps[aa].get(kk) * nodeList.get(kk).eta;
-                idealPoint += val;
-                authorFeatures[aa].set(kk, authorNodeProps[aa].get(kk));
-                authorFeatures[aa].set(N + kk, val);
+                authorFeatures[aa].change(kk, authorNodeProps[aa].get(kk));
             }
-            authorFeatures[aa].set(2 * N, idealPoint);
-        }
 
+            authorNodeWeightedProps[aa].normalize();
+            for (int kk = 0; kk < N; kk++) {
+                authorFeatures[aa].change(N + kk, authorNodeWeightedProps[aa].get(kk));
+            }
+
+            authorNodePolarizedProps[aa].normalize();
+            for (int kk = 0; kk < N; kk++) {
+                authorFeatures[aa].change(2 * N + kk, authorNodePolarizedProps[aa].get(kk));
+            }
+
+            authorFeatures[aa].change(3 * N, authorNodePolarizedProps[aa].sum());
+        }
         return authorFeatures;
     }
 
@@ -2336,12 +2105,10 @@ class SNLDATestRunner implements Runnable {
         testSampler.configure(sampler);
         testSampler.setTestConfigurations(sampler.getBurnIn(),
                 sampler.getMaxIters(), sampler.getSampleLag());
-
+        testSampler.setupData(testDocIndices, testWords, testAuthors, null,
+                testAuthorIndices, null, testVotes);
         try {
-            testSampler.test(stateFile, testDocIndices, testWords, testAuthors,
-                    testAuthorIndices, testVotes,
-                    predictionFile, authorScoreFile, voteScoreFile,
-                    assignmentFile);
+            testSampler.test(stateFile, predictionFile, assignmentFile);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException();

@@ -29,7 +29,7 @@ public abstract class AbstractVotePredictor extends AbstractModel {
     public AbstractVotePredictor(String name) {
         super(name);
     }
-
+    
     /**
      * Output author scores.
      *

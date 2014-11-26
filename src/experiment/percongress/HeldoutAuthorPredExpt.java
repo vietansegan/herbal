@@ -22,7 +22,9 @@ import util.CLIUtils;
 import util.IOUtils;
 import util.SparseVector;
 import util.govtrack.GTLegislator;
+import votepredictor.AbstractTopicBasedIdealPoint.WordWeightType;
 import votepredictor.AbstractVotePredictor;
+import votepredictor.SLDAIdealPoint;
 import votepredictor.SLDAMultIdealPoint;
 import votepredictor.SNLDAIdealPoint;
 import votepredictor.baselines.AuthorTFIDFNN;
@@ -161,6 +163,39 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             sldaM.inputModel(sldaM.getFinalStateFile().getAbsolutePath());
         }
 
+        SLDAIdealPoint slda = new SLDAIdealPoint();
+        if (cmd.hasOption("slda")) {
+            basename.append("-slda");
+
+            int K = CLIUtils.getIntegerArgument(cmd, "K", 100);
+            double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
+            double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
+            double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
+            double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 10);
+            double rate_alpha = CLIUtils.getDoubleArgument(cmd, "rate-alpha", 1);
+            double rate_eta = CLIUtils.getDoubleArgument(cmd, "rate-eta", 0.01);
+            double rho = CLIUtils.getDoubleArgument(cmd, "rho", 1.0);
+            String wordWeightTypeStr = CLIUtils.getStringArgument(cmd, "wwt", "none");
+            WordWeightType wordWeightType;
+            switch (wordWeightTypeStr) {
+                case "none":
+                    wordWeightType = WordWeightType.NONE;
+                    break;
+                case "tfidf":
+                    wordWeightType = WordWeightType.TFIDF;
+                    break;
+                default:
+                    throw new RuntimeException("Word weight type " + wordWeightTypeStr
+                            + " not supported");
+            }
+            slda.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), K,
+                    alpha, beta, rho, mu, sigma, rate_alpha, rate_eta,
+                    wordWeightType, initState, paramOpt,
+                    burn_in, max_iters, sample_lag, report_interval);
+            slda.inputModel(slda.getFinalStateFile().getAbsolutePath());
+        }
+
         // ============================= SNLDA =================================
         SNLDAIdealPoint snlda = new SNLDAIdealPoint();
         if (cmd.hasOption("snlda")) {
@@ -175,6 +210,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             double mu = 0.0;
             double sigma = 2.5;
             double rho = 0.5;
+            WordWeightType wordWeightType = WordWeightType.TFIDF;
             boolean hasRootTopic = false;
 
             snlda.setVerbose(verbose);
@@ -201,10 +237,9 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             snlda.configure(outputFolder.getAbsolutePath(),
                     debateVoteData.getWordVocab().size(), J,
                     issuePhis, alphas, betas, gamma_means, gamma_scales,
-                    rho, mu, sigma, hasRootTopic,
+                    rho, mu, sigma, hasRootTopic, wordWeightType,
                     initState, pathAssumption, paramOpt,
                     burn_in, max_iters, sample_lag, report_interval);
-            snlda.inputModel(snlda.getFinalStateFile().getAbsolutePath());
         }
 
         String optTypeStr = CLIUtils.getStringArgument(cmd, "opt-type", "lbfgs");
@@ -280,6 +315,19 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 numFeatures.add(2);
             }
 
+            if (cmd.hasOption("slda")) {
+                slda.setupData(trainDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        votes, trainAuthorIndices, trainBillIndices,
+                        trainVotes);
+                slda.inputModel(slda.getFinalStateFile().getAbsolutePath());
+                slda.inputAssignments(slda.getFinalStateFile().getAbsolutePath());
+                SparseVector[] authorFeatures = slda.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
+
             if (cmd.hasOption("sldamult")) {
                 sldaM.setupData(trainDebateIndices,
                         debateVoteData.getWords(),
@@ -295,7 +343,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             }
 
             if (cmd.hasOption("snlda")) {
-                snlda.train(trainDebateIndices,
+                snlda.setupData(trainDebateIndices,
                         debateVoteData.getWords(),
                         debateVoteData.getAuthors(),
                         votes, trainAuthorIndices, trainBillIndices,
@@ -330,6 +378,8 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                     trainVotes, addFeatures, numFeatures);
             File trResultFolder = new File(predFolder, TRAIN_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(trResultFolder);
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
             AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
                     AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
         }
@@ -357,16 +407,34 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 addFeatures.add(authorParties);
                 numFeatures.add(2);
             }
+            
+            if (cmd.hasOption("slda")) {
+                slda.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                slda.inputModel(slda.getFinalStateFile().getAbsolutePath());
+                slda.inputAssignments(new File(new File(outputFolder, slda.getSamplerFolder()),
+                        TEST_PREFIX + AssignmentFile).getAbsolutePath());
+                SparseVector[] authorFeatures = slda.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
 
             if (cmd.hasOption("snlda")) {
                 File samplerFolder = new File(outputFolder, snlda.getSamplerFolder());
-                snlda.test(testDebateIndices,
+                snlda.setupData(testDebateIndices,
                         debateVoteData.getWords(),
                         debateVoteData.getAuthors(),
+                        null,
                         testAuthorIndices,
+                        testBillIndices,
                         testVotes);
                 snlda.inputAssignments(new File(samplerFolder,
-                        TEST_PREFIX + "assignments.zip").getAbsolutePath());
+                        TEST_PREFIX + AssignmentFile).getAbsolutePath());
                 SparseVector[] authorFeatures = snlda.getAuthorFeatures();
                 addFeatures.add(authorFeatures);
                 numFeatures.add(authorFeatures[0].getDimension());
@@ -401,8 +469,14 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                     testVotes, addFeatures, numFeatures);
             File teResultFolder = new File(predFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
                     AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("analyzeerror")) {
+            analyzeError(predFolder);
         }
     }
 

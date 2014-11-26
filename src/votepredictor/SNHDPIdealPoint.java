@@ -1,4 +1,4 @@
-    package votepredictor;
+package votepredictor;
 
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import core.AbstractSampler;
