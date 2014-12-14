@@ -1,7 +1,7 @@
 package votepredictor;
 
+import votepredictor.textidealpoint.AbstractTextIdealPoint;
 import cc.mallet.optimize.LimitedMemoryBFGS;
-import core.AbstractSampler;
 import data.Vote;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -20,16 +20,18 @@ import sampling.util.SparseCount;
 import sampling.util.TreeNode;
 import util.IOUtils;
 import util.MiscUtils;
+import util.MismatchRuntimeException;
 import util.RankingItem;
 import util.SamplerUtils;
 import util.SparseVector;
 import util.StatUtils;
+import util.evaluation.Measurement;
 
 /**
  *
  * @author vietan
  */
-public class SNHDPIdealPoint extends AbstractSampler {
+public class SNHDPIdealPoint extends AbstractTextIdealPoint {
 
     public static final int NEW_CHILD_INDEX = -1;
 
@@ -41,24 +43,13 @@ public class SNHDPIdealPoint extends AbstractSampler {
     public double rho;
     public double mu;
     public double[] sigmas;
-    public double ipSigma;
+    public double sigma;
     public int numSteps = 20;
     public double epsilon = 0.01;
     // input
-    protected int[][] words;
-    protected ArrayList<Integer> docIndices;
-    protected ArrayList<Integer> authorIndices; // potentially not needed
-    protected ArrayList<Integer> billIndices;   // potentially not needed
-    protected int[] authors; // [D]: author of each document
-    protected int[][] votes;
-    protected boolean[][] trainVotes;
     protected double[][] issuePhis;
-    protected int V; // vocabulary size
     // derive
     protected int K; // number of issues
-    protected int D; // number of documents
-    protected int A; // number of authors
-    protected int B; // number of bills
     protected int L = 3; // number of levels
     // configuration
     protected PathAssumption pathAssumption;
@@ -71,14 +62,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
     protected double[] y; // [B]
     protected double[] authorMeans;
     // internal
-    protected int numTokens;
     protected int numTokensChanged;
     protected double[] background;
     protected int numTokensAccepted;
-    protected int[][] authorDocIndices; // [A] x [D_a]: store the list of documents for each author
-    protected int[] authorTokenCounts;  // [A]: store the total #tokens for each author
-    protected ArrayList<String> authorVocab;
-    protected ArrayList<String> voteVocab;
     protected ArrayList<String> labelVocab;
     protected int posAnchor;
     protected int negAnchor;
@@ -93,14 +79,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
 
     public void setLabelVocab(ArrayList<String> labelVoc) {
         this.labelVocab = labelVoc;
-    }
-
-    public void setAuthorVocab(ArrayList<String> authorVoc) {
-        this.authorVocab = authorVoc;
-    }
-
-    public void setVoteVocab(ArrayList<String> voteVoc) {
-        this.voteVocab = voteVoc;
     }
 
     protected double getSigma(int l) {
@@ -155,7 +133,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 sampler.rho,
                 sampler.mu,
                 sampler.sigmas,
-                sampler.ipSigma,
+                sampler.sigma,
                 sampler.hasRootTopic,
                 sampler.initState,
                 sampler.pathAssumption,
@@ -199,8 +177,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
         this.rho = rho;
         this.mu = mu;
         this.sigmas = sigmas;
-        this.ipSigma = ipSigma;
+        this.sigma = ipSigma;
         this.hasRootTopic = hasRootTopic;
+        this.wordWeightType = WordWeightType.NONE;
 
         this.hyperparams = new ArrayList<Double>();
         this.sampledParams = new ArrayList<ArrayList<Double>>();
@@ -274,169 +253,36 @@ public class SNHDPIdealPoint extends AbstractSampler {
         for (double ss : sigmas) {
             str.append("-").append(MiscUtils.formatDouble(ss));
         }
-        str.append("_s-").append(formatter.format(ipSigma));
+        str.append("_s-").append(formatter.format(sigma));
         str.append("_opt-").append(this.paramOptimized);
         str.append("_rt-").append(this.hasRootTopic);
         str.append("_").append(pathAssumption);
         this.name = str.toString();
     }
-
-    /**
-     * Pre-compute useful data statistics.
-     */
-    protected void prepareDataStatistics() {
-        // statistics
-        numTokens = 0;
-        background = new double[V];
-        for (int dd = 0; dd < D; dd++) {
-            numTokens += words[dd].length;
-            for (int nn = 0; nn < words[dd].length; nn++) {
-                background[words[dd][nn]]++;
-            }
-        }
-        for (int vv = 0; vv < V; vv++) {
-            background[vv] /= numTokens;
-        }
-
-        // author document list
-        ArrayList<Integer>[] authorDocList = new ArrayList[A];
-        for (int a = 0; a < A; a++) {
-            authorDocList[a] = new ArrayList<Integer>();
-        }
-        for (int d = 0; d < D; d++) {
-            if (words[d].length > 0) {
-                authorDocList[authors[d]].add(d);
-            }
-        }
-        this.authorDocIndices = new int[A][];
-        this.authorTokenCounts = new int[A];
-        for (int a = 0; a < A; a++) {
-            this.authorDocIndices[a] = new int[authorDocList[a].size()];
-            for (int dd = 0; dd < this.authorDocIndices[a].length; dd++) {
-                this.authorDocIndices[a][dd] = authorDocList[a].get(dd);
-                this.authorTokenCounts[a] += words[authorDocIndices[a][dd]].length;
-            }
-        }
+    
+    @Override
+    public String getCurrentState() {
+        return this.getSamplerFolderPath()
+                + "\n" + printGlobalTreeSummary()
+                + "\nCurrent thread " + Thread.currentThread().getId();
     }
-
-    /**
-     * Set training data.
-     *
-     * @param docIndices Indices of selected documents
-     * @param words Document words
-     * @param authors Document authors
-     * @param votes All votes
-     * @param authorIndices Indices of training authors
-     * @param billIndices Indices of training bills
-     * @param trainVotes Training votes
-     */
-    public void train(ArrayList<Integer> docIndices,
-            int[][] words,
-            int[] authors,
-            int[][] votes,
-            ArrayList<Integer> authorIndices,
-            ArrayList<Integer> billIndices,
-            boolean[][] trainVotes) {
-        // list of authors
-        this.authorIndices = authorIndices;
-        if (authorIndices == null) {
-            this.authorIndices = new ArrayList<>();
-            for (int aa = 0; aa < votes.length; aa++) {
-                this.authorIndices.add(aa);
-            }
-        }
-        this.A = this.authorIndices.size();
-
-        HashMap<Integer, Integer> inverseAuthorMap = new HashMap<>();
-        for (int ii = 0; ii < A; ii++) {
-            int aa = this.authorIndices.get(ii);
-            inverseAuthorMap.put(aa, ii);
-        }
-
-        // list of bills
-        this.billIndices = billIndices;
-        if (billIndices == null) {
-            this.billIndices = new ArrayList<>();
-            for (int bb = 0; bb < votes[0].length; bb++) {
-                this.billIndices.add(bb);
-            }
-        }
-        this.B = this.billIndices.size();
-
-        // votes and training votes
-        this.votes = new int[A][B];
-        this.trainVotes = new boolean[A][B];
-        for (int ii = 0; ii < A; ii++) {
-            int aa = this.authorIndices.get(ii);
-            for (int jj = 0; jj < B; jj++) {
-                int bb = this.billIndices.get(jj);
-                this.votes[ii][jj] = votes[aa][bb];
-                this.trainVotes[ii][jj] = trainVotes[aa][bb];
-            }
-        }
-
-        // documents
-        this.docIndices = docIndices;
-        if (this.docIndices == null) { // add all documents
-            this.docIndices = new ArrayList<>();
-            for (int dd = 0; dd < words.length; dd++) {
-                this.docIndices.add(dd);
-            }
-        }
-        this.D = this.docIndices.size();
-        this.words = new int[D][];
-        this.authors = new int[D];
-        for (int ii = 0; ii < this.D; ii++) {
-            int dd = this.docIndices.get(ii);
-            this.words[ii] = words[dd];
-            this.authors[ii] = inverseAuthorMap.get(authors[dd]);
-        }
-
-        this.prepareDataStatistics();
-
-        if (verbose) {
-            logln("--- # documents:\t" + D);
-            int numNonEmptyDocs = 0;
-            for (int a = 0; a < A; a++) {
-                numNonEmptyDocs += this.authorDocIndices[a].length;
-            }
-            logln("--- # non-empty documents:\t" + numNonEmptyDocs);
-            int numNonEmptyAuthors = 0;
-            for (int a = 0; a < A; a++) {
-                if (authorDocIndices[a].length != 0) {
-                    numNonEmptyAuthors++;
-                }
-            }
-            logln("--- # speakers:\t" + A);
-            logln("--- # non-empty speakers:\t" + numNonEmptyAuthors);
-            logln("--- # tokens:\t" + numTokens
-                    + ", " + StatUtils.sum(authorTokenCounts));
-        }
-    }
-
+    
     /**
      * Make prediction on held-out votes of known legislators and known votes.
      *
-     * @param testVotes Indicators of test votes
      * @return Predicted probabilities
      */
-    public SparseVector[] test(boolean[][] testVotes) {
-        SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < predictions.length; aa++) {
-            predictions[aa] = new SparseVector();
-            for (int bb = 0; bb < testVotes[aa].length; bb++) {
-                if (testVotes[aa][bb]) {
+    public SparseVector[] predictInMatrix() {
+        SparseVector[] predictions = new SparseVector[validVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(validVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = billIndices.get(bb);
+                if (isValidVote(aa, bb)) {
                     double score = Math.exp(u[aa] * x[bb] + y[bb]);
-
-                    if (score == 0) {
-                        System.out.println("aa = " + aa + ". " + u[aa]);
-                        System.out.println("bb = " + bb + ". " + x[bb] + ". " + y[bb]);
-                        System.out.println("raw: " + u[aa] * x[bb] + y[bb]);
-                        throw new RuntimeException();
-                    }
-
-                    double val = score / (1 + score);
-                    predictions[aa].set(bb, val);
+                    double prob = score / (1.0 + score);
+                    predictions[author].set(bill, prob);
                 }
             }
         }
@@ -444,30 +290,26 @@ public class SNHDPIdealPoint extends AbstractSampler {
     }
 
     /**
-     * Make prediction for held-out voters using their text using the final
-     * learned model. This can only make predictions on existing bills, so no
-     * billIndices are needed.
+     * Make predictions on held-out votes of unknown legislators on known votes.
      *
-     * @param stateFile State file
-     * @param docIndices List of selected document indices
-     * @param words Documents
-     * @param authors Voters
-     * @param authorIndices List of test (held-out) voters
-     * @param testVotes Indices of test votes
-     * @param predictionFile
-     * @param partAuthorScoreFile
-     * @param partVoteScoreFile
      * @return Predicted probabilities
      */
+    public SparseVector[] predictOutMatrix() {
+        this.u = this.authorMeans;
+        return predictInMatrix();
+    }
+
+    /**
+     * Sample topic assignments for test documents and make predictions.
+     *
+     * @param stateFile
+     * @param predictionFile
+     * @param assignmentFile
+     * @return predictions
+     */
     public SparseVector[] test(File stateFile,
-            ArrayList<Integer> docIndices,
-            int[][] words,
-            int[] authors,
-            ArrayList<Integer> authorIndices,
-            boolean[][] testVotes,
             File predictionFile,
-            File partAuthorScoreFile,
-            File partVoteScoreFile) {
+            File assignmentFile) {
         if (authorIndices == null) {
             throw new RuntimeException("List of test authors is null");
         }
@@ -475,72 +317,25 @@ public class SNHDPIdealPoint extends AbstractSampler {
         if (stateFile == null) {
             stateFile = getFinalStateFile();
         }
+        setTestConfigurations(); // set up test
 
         if (verbose) {
             logln("Setting up test ...");
-            logln("--- state file: " + stateFile);
+            logln("--- test burn-in: " + testBurnIn);
+            logln("--- test maximum number of iterations: " + testMaxIter);
+            logln("--- test sample lag: " + testSampleLag);
+            logln("--- test report interval: " + testRepInterval);
         }
 
-        this.setTestConfigurations(50, 100, 5, 5);
+        // sample on test data
+        sampleNewDocuments(stateFile, assignmentFile);
 
-        this.sampleNewDocuments(getFinalStateFile(), words, docIndices);
-
-        // predict author scores
-        int testA = authorIndices.size();
-        double[] predAuthorScores = new double[testA];
-        double[] predAuthorDens = new double[testA];
-        Stack<Node> stack = new Stack<>();
-        stack.add(root);
-        while (!stack.isEmpty()) {
-            Node node = stack.pop();
-            for (Node child : node.getChildren()) {
-                stack.add(child);
-            }
-            for (int ii : node.tokenCounts.getIndices()) {
-                int count = node.tokenCounts.getCount(ii);
-                int author = authors[docIndices.get(ii)];
-                int aa = authorIndices.indexOf(author);
-                if (aa < 0) {
-                    throw new RuntimeException("aa = " + aa + ". " + author);
-                }
-                predAuthorScores[aa] += count * node.eta;
-                predAuthorDens[aa] += count;
-            }
-        }
-
-        this.authorMeans = new double[testA];
-        for (int aa = 0; aa < testA; aa++) {
-            this.authorMeans[aa] = predAuthorScores[aa] / predAuthorDens[aa];
-
-        }
-
-        // predict vote probabilities
-        SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < testA; aa++) {
-            int author = authorIndices.get(aa);
-            predictions[author] = new SparseVector(testVotes[author].length);
-            double authorScore = this.authorMeans[aa];
-            for (int bb = 0; bb < testVotes[author].length; bb++) {
-                if (testVotes[author][bb]) {
-                    double score = Math.exp(authorScore * x[bb] + y[bb]);
-                    double val = score / (1 + score);
-                    predictions[author].set(bb, val);
-                }
-            }
-        }
+        // make prediction on votes of unknown voters
+        SparseVector[] predictions = predictOutMatrix();
 
         if (predictionFile != null) { // output predictions
             AbstractVotePredictor.outputPredictions(predictionFile, null, predictions);
         }
-
-        if (partAuthorScoreFile != null) { // output author scores
-            AbstractVotePredictor.outputAuthorScores(partAuthorScoreFile, null, u);
-        }
-
-        if (partVoteScoreFile != null) { // output vote scores
-            AbstractVotePredictor.outputVoteScores(partVoteScoreFile, null, x, y);
-        }
-
         return predictions;
     }
 
@@ -550,11 +345,11 @@ public class SNHDPIdealPoint extends AbstractSampler {
      * @param stateFile
      * @param testWords
      * @param testDocIndices
+     * @param assignmentFile
      */
     private void sampleNewDocuments(
             File stateFile,
-            int[][] testWords,
-            ArrayList<Integer> testDocIndices) {
+            File assignmentFile) {
         if (verbose) {
             System.out.println();
             logln("Perform regression using model from " + stateFile);
@@ -566,7 +361,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
 
         // input model
         inputModel(stateFile.getAbsolutePath());
-
+        inputBillScore(stateFile.getAbsolutePath());
         // clear all existing assignments from training data
         Stack<Node> stack = new Stack<>();
         stack.add(root);
@@ -579,33 +374,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             node.subtreeTokenCounts = new SparseCount();
             node.getContent().clear();
         }
-
-        // set up test data
-        this.docIndices = testDocIndices;
-        if (this.docIndices == null) { // add all documents
-            this.docIndices = new ArrayList<>();
-            for (int dd = 0; dd < testWords.length; dd++) {
-                this.docIndices.add(dd);
-            }
-        }
-        this.numTokens = 0;
-        this.D = this.docIndices.size();
-        this.words = new int[D][];
-        for (int ii = 0; ii < D; ii++) {
-            int dd = this.docIndices.get(ii);
-            this.words[ii] = testWords[dd];
-            this.numTokens += this.words[ii].length;
-        }
-
-        if (verbose) {
-            logln("--- # test documents: " + docIndices.size());
-            logln("--- # tokens: " + this.numTokens);
-        }
-
-        z = new Node[D][];
-        for (int d = 0; d < D; d++) {
-            z[d] = new Node[words[d].length];
-        }
+        initializeDataStructure();
 
         // sample
         for (iter = 0; iter < testMaxIter; iter++) {
@@ -622,9 +391,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
             // sample topic assignments
             long topicTime;
             if (iter == 0) {
-                topicTime = sampleZs(!REMOVE, !ADD, !REMOVE, ADD, !OBSERVED, !EXTEND);
+                topicTime = sampleZs(!REMOVE, !ADD, !REMOVE, ADD, !OBSERVED, EXTEND);
             } else {
-                topicTime = sampleZs(!REMOVE, !ADD, REMOVE, ADD, !OBSERVED, !EXTEND);
+                topicTime = sampleZs(!REMOVE, !ADD, REMOVE, ADD, !OBSERVED, EXTEND);
             }
 
             if (disp) {
@@ -635,6 +404,33 @@ public class SNHDPIdealPoint extends AbstractSampler {
                         + ". # tokens accepted: " + numTokensAccepted
                         + " (" + (double) numTokensAccepted / numTokens + ")"
                         + "\n\n");
+            }
+        }
+
+        if (assignmentFile != null) {
+            // assignment string
+            StringBuilder assignStr = new StringBuilder();
+            for (int dd = 0; dd < z.length; dd++) {
+                for (int nn = 0; nn < z[dd].length; nn++) {
+                    assignStr.append(dd)
+                            .append("\t").append(nn)
+                            .append("\t").append(z[dd][nn].getPathString()).append("\n");
+                }
+            }
+
+            try { // output to a compressed file
+                ArrayList<String> contentStrs = new ArrayList<>();
+                contentStrs.add(assignStr.toString());
+
+                String filename = IOUtils.removeExtension(IOUtils.getFilename(
+                        assignmentFile.getAbsolutePath()));
+                ArrayList<String> entryFiles = new ArrayList<>();
+                entryFiles.add(filename + AssignmentFileExt);
+
+                this.outputZipFile(assignmentFile.getAbsolutePath(), contentStrs, entryFiles);
+            } catch (Exception e) {
+                e.printStackTrace();
+                throw new RuntimeException("Exception while outputing to " + assignmentFile);
             }
         }
     }
@@ -649,7 +445,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
         initializeDataStructure();
         initializeUXY();
         initializeAssignments();
-        updateEtas();
         if (debug) {
             validate("Initialized");
         }
@@ -725,9 +520,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 node.initializeGlobalPi();
             }
         }
-        x = new double[B];
-        y = new double[B];
-        u = new double[A];
     }
 
     /**
@@ -745,7 +537,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
         double[] rlda_betas = {1.0, 0.1};
         int[] Ks = new int[2];
         Ks[0] = K;
-        Ks[1] = 10;
+        Ks[1] = 5;
 
         rlda.configure(folder, V, Ks, rlda_alphas, rlda_betas,
                 initState, paramOptimized,
@@ -811,9 +603,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 node.initializeGlobalPi();
             }
         }
-        x = new double[B];
-        y = new double[B];
-        u = new double[A];
     }
 
     protected void initializeDataStructure() {
@@ -875,7 +664,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             int withCount = 0;
             int againstCount = 0;
             for (int bb = 0; bb < B; bb++) {
-                if (trainVotes[aa][bb]) {
+                if (validVotes[aa][bb]) {
                     if (votes[aa][bb] == Vote.WITH) {
                         withCount++;
                     } else if (votes[aa][bb] == Vote.AGAINST) {
@@ -898,15 +687,15 @@ public class SNHDPIdealPoint extends AbstractSampler {
             } else if (ii > 3 * A / 4) {
                 this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
             } else {
-                this.u[aa] = SamplerUtils.getGaussian(mu, ipSigma);
+                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
             }
         }
 
         this.x = new double[B];
         this.y = new double[B];
         for (int b = 0; b < B; b++) {
-            this.x[b] = SamplerUtils.getGaussian(mu, ipSigma);
-            this.y[b] = SamplerUtils.getGaussian(mu, ipSigma);
+            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
+            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
         }
     }
 
@@ -936,7 +725,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
         startTime = System.currentTimeMillis();
 
         for (iter = 0; iter < MAX_ITER; iter++) {
-            boolean isReporting = isReporting();
+            isReporting = isReporting();
             if (isReporting) {
                 double loglikelihood = this.getLogLikelihood();
                 logLikelihoods.add(loglikelihood);
@@ -948,29 +737,23 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 } else {
                     logln("--- Sampling. " + str);
                 }
-            }
-
-            long topicTime = sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED, EXTEND);
-            long thetaTime = updateThetas();
-            long etaTime = updateEtas();
-            long uxyTime = updateUXY();
-
-            if (isReporting) {
-                logln("--- --- Time. Topic: " + topicTime
-                        + ". Theta: " + thetaTime
-                        + ". Eta: " + etaTime
-                        + ". UXY: " + uxyTime);
-                logln("--- --- # tokens: " + numTokens
-                        + ". # tokens changed: " + numTokensChanged
-                        + " (" + (double) numTokensChanged / numTokens + ")"
-                        + ". # tokens accepted: " + numTokensAccepted
-                        + " (" + (double) numTokensAccepted / numTokens + ")");
-                if (debug) {
-                    logln("\n" + printGlobalTree() + "\n\n");
-                } else {
-                    logln("\n" + printGlobalTreeSummary() + "\n\n");
+                logln("--- --- positive anchor (" + posAnchor + "): "
+                        + MiscUtils.formatDouble(u[posAnchor])
+                        + ". negative anchor (" + negAnchor + "): "
+                        + MiscUtils.formatDouble(u[negAnchor]));
+                logln("--- Evaluating ...");
+                SparseVector[] predictions = predictInMatrix();
+                ArrayList<Measurement> measurements = AbstractVotePredictor
+                        .evaluate(votes, validVotes, predictions);
+                for (Measurement m : measurements) {
+                    logln(">>> >>> " + m.getName() + ": " + m.getValue());
                 }
             }
+
+            updateEtas();
+            updateUXY();
+            sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED, EXTEND);
+            updateThetas();
 
             if (debug) {
                 validate("iter " + iter);
@@ -1011,9 +794,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             node.getContent().increment(words[dd][nn]);
         }
         if (addToData) {
-            if (authorMeans != null) { // don't update during test
-                authorMeans[authors[dd]] += node.eta / authorTokenCounts[authors[dd]];
-            }
+            authorMeans[authors[dd]] += node.eta / authorTotalWordWeights[authors[dd]];
             node.tokenCounts.increment(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -1035,9 +816,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
     private void removeToken(int dd, int nn, Node node,
             boolean removeFromData, boolean removeFromModel) {
         if (removeFromData) {
-            if (authorMeans != null) { // don't update during test
-                authorMeans[authors[dd]] -= node.eta / authorTokenCounts[authors[dd]];
-            }
+            authorMeans[authors[dd]] -= node.eta / authorTotalWordWeights[authors[dd]];
             node.tokenCounts.decrement(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -1354,7 +1133,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
      * @return
      */
     private double getResponseLogLikelihood(int author, Node node) {
-        double aMean = authorMeans[author] + node.eta / authorTokenCounts[author];
+        double aMean = authorMeans[author] + node.eta / authorTotalWordWeights[author];
         double resLLh = StatUtils.logNormalProbability(u[author], aMean, Math.sqrt(rho));
         return resLLh;
     }
@@ -1365,6 +1144,9 @@ public class SNHDPIdealPoint extends AbstractSampler {
      * @return Elapsed time
      */
     public long updateEtas() {
+        if (isReporting) {
+            logln("+++ Updating etas ...");
+        }
         long sTime = System.currentTimeMillis();
 
         // list of nodes
@@ -1381,7 +1163,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             for (int dd : node.tokenCounts.getIndices()) {
                 int count = node.tokenCounts.getCount(dd);
                 int author = authors[dd];
-                double val = (double) count / authorTokenCounts[author];
+                double val = (double) count / authorTotalWordWeights[author];
                 designMatrix[author].change(kk, val);
             }
         }
@@ -1405,7 +1187,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
             ex.printStackTrace();
         }
 
-        if (isReporting()) {
+        if (isReporting) {
             logln("--- converged? " + converged);
         }
 
@@ -1420,7 +1202,11 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 authorMeans[aa] += designMatrix[aa].get(kk) * nodeList.get(kk).eta;
             }
         }
-        return System.currentTimeMillis() - sTime;
+        long eTime = System.currentTimeMillis() - sTime;
+        if (isReporting) {
+            logln("--- --- time: " + eTime);
+        }
+        return eTime;
     }
 
     private ArrayList<Node> getNodeList() {
@@ -1466,47 +1252,61 @@ public class SNHDPIdealPoint extends AbstractSampler {
      * @return Elapsed time
      */
     private long updateUXY() {
+        if (isReporting) {
+            logln("+++ Updating UXY ...");
+        }
         long sTime = System.currentTimeMillis();
         for (int ii = 0; ii < numSteps; ii++) {
             updateUs();
             updateXYs();
         }
-        return System.currentTimeMillis() - sTime;
+        long eTime = System.currentTimeMillis() - sTime;
+        if (isReporting) {
+            logln("--- --- time: " + eTime);
+        }
+        return eTime;
     }
 
+    /**
+     * Update Us.
+     */
     private void updateUs() {
         for (int a = 0; a < A; a++) {
             double grad = 0.0;
             // likelihood
-            for (int b = 0; b < votes[a].length; b++) {
-                if (trainVotes[a][b]) {
+            for (int b = 0; b < B; b++) {
+                if (isValidVote(a, b)) {
                     double score = Math.exp(u[a] * x[b] + y[b]);
                     double prob = score / (1 + score);
-                    grad += x[b] * (votes[a][b] - prob); // only work for 0 and 1
+                    grad += x[b] * (getVote(a, b) - prob); // only work for 0 and 1
                 }
             }
             // prior
-            grad -= (u[a] - authorMeans[a]) / ipSigma;
+            grad -= (u[a] - authorMeans[a]) / sigma;
             // update
             u[a] += epsilon * grad;
         }
     }
 
+    /**
+     * Update Xs and Ys.
+     */
     public void updateXYs() {
         for (int b = 0; b < B; b++) {
             double gradX = 0.0;
             double gradY = 0.0;
             // likelihood
             for (int a = 0; a < A; a++) {
-                if (trainVotes[a][b]) {
+                if (isValidVote(a, b)) {
                     double score = Math.exp(u[a] * x[b] + y[b]);
-                    gradX += u[a] * (votes[a][b] - score / (1 + score));
-                    gradY += votes[a][b] - score / (1 + score);
+                    gradX += u[a] * (getVote(a, b) - score / (1 + score));
+                    gradY += getVote(a, b) - score / (1 + score);
                 }
             }
             // prior
-            gradX -= (x[b] - mu) / ipSigma;
-            gradY -= (y[b] - mu) / ipSigma;
+            gradX -= (x[b] - mu) / sigma;
+            gradY -= (y[b] - mu) / sigma;
+
             // update
             x[b] += epsilon * gradX;
             y[b] += epsilon * gradY;
@@ -1515,21 +1315,15 @@ public class SNHDPIdealPoint extends AbstractSampler {
 
     private double getVoteLogLikelihood() {
         double voteLlh = 0.0;
-        for (int a = 0; a < A; a++) {
-            voteLlh += computeAuthorVoteLogLikelihood(a, u[a]);
-        }
-        return voteLlh;
-    }
-
-    private double computeAuthorVoteLogLikelihood(int author, double authorVal) {
-        double llh = 0.0;
-        for (int b = 0; b < B; b++) {
-            if (trainVotes[author][b]) {
-                double score = authorVal * x[b] + y[b];
-                llh += votes[author][b] * score - Math.log(1 + Math.exp(score));
+        for (int aa = 0; aa < A; aa++) {
+            for (int bb = 0; bb < B; bb++) {
+                if (isValidVote(aa, bb)) {
+                    double score = u[aa] * x[bb] + y[bb];
+                    voteLlh += getVote(aa, bb) * score - Math.log(1 + Math.exp(score));
+                }
             }
         }
-        return llh;
+        return voteLlh;
     }
 
     @Override
@@ -1565,22 +1359,25 @@ public class SNHDPIdealPoint extends AbstractSampler {
         if (verbose) {
             logln("--- Outputing current state to " + filepath);
         }
-        // model string
-        StringBuilder modelStr = new StringBuilder();
 
         // authors
-        modelStr.append(A).append("\n");
+        StringBuilder authorStr = new StringBuilder();
         for (int aa = 0; aa < A; aa++) {
-            modelStr.append(u[aa]).append("\n");
+            authorStr.append(aa).append("\t")
+                    .append(this.authorIndices.get(aa)).append("\t")
+                    .append(u[aa]).append("\n");
         }
 
         // bills
-        modelStr.append(B).append("\n");
+        StringBuilder billStr = new StringBuilder();
         for (int bb = 0; bb < B; bb++) {
-            modelStr.append(x[bb]).append("\t").append(y[bb]).append("\n");
+            billStr.append(bb).append("\t")
+                    .append(this.billIndices.get(bb)).append("\t")
+                    .append(x[bb]).append("\t").append(y[bb]).append("\n");
         }
 
-        // tree
+        // model string
+        StringBuilder modelStr = new StringBuilder();
         Stack<Node> stack = new Stack<>();
         stack.add(root);
         while (!stack.isEmpty()) {
@@ -1613,7 +1410,20 @@ public class SNHDPIdealPoint extends AbstractSampler {
 
         // output to a compressed file
         try {
-            this.outputZipFile(filepath, modelStr.toString(), assignStr.toString());
+            ArrayList<String> contentStrs = new ArrayList<>();
+            contentStrs.add(modelStr.toString());
+            contentStrs.add(assignStr.toString());
+            contentStrs.add(authorStr.toString());
+            contentStrs.add(billStr.toString());
+
+            String filename = IOUtils.removeExtension(IOUtils.getFilename(filepath));
+            ArrayList<String> entryFiles = new ArrayList<>();
+            entryFiles.add(filename + ModelFileExt);
+            entryFiles.add(filename + AssignmentFileExt);
+            entryFiles.add(filename + AuthorFileExt);
+            entryFiles.add(filename + BillFileExt);
+
+            this.outputZipFile(filepath, contentStrs, entryFiles);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Exception while outputing to " + filepath);
@@ -1627,6 +1437,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
         }
         try {
             inputModel(filepath);
+            inputAuthorScore(filepath);
+            inputBillScore(filepath);
             inputAssignments(filepath);
         } catch (Exception e) {
             e.printStackTrace();
@@ -1646,22 +1458,6 @@ public class SNHDPIdealPoint extends AbstractSampler {
         try {
             String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
             BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + ModelFileExt);
-
-            A = Integer.parseInt(reader.readLine());
-            u = new double[A];
-            for (int aa = 0; aa < A; aa++) {
-                u[aa] = Double.parseDouble(reader.readLine());
-            }
-
-            B = Integer.parseInt(reader.readLine());
-            x = new double[B];
-            y = new double[B];
-            for (int bb = 0; bb < B; bb++) {
-                String[] sline = reader.readLine().split("\t");
-                x[bb] = Double.parseDouble(sline[0]);
-                y[bb] = Double.parseDouble(sline[1]);
-            }
-
             HashMap<String, Node> nodeMap = new HashMap<String, Node>();
             String line;
             while ((line = reader.readLine()) != null) {
@@ -1724,6 +1520,64 @@ public class SNHDPIdealPoint extends AbstractSampler {
             logln("--- --- Loading assignments from " + zipFilepath);
         }
         System.out.println("--- --- --- TO BE IMPLEMENTED");
+    }
+
+    public void inputAuthorScore(String zipFilepath) {
+        if (verbose) {
+            logln("--- --- Loading author score from " + zipFilepath);
+        }
+        try {
+            String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
+            BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + AuthorFileExt);
+
+            u = new double[A];
+            for (int aa = 0; aa < A; aa++) {
+                String[] sline = reader.readLine().split("\t");
+                if (Integer.parseInt(sline[0]) != aa) {
+                    throw new MismatchRuntimeException(Integer.parseInt(sline[0]), aa);
+                }
+                if (Integer.parseInt(sline[1]) != authorIndices.get(aa)) {
+                    throw new MismatchRuntimeException(Integer.parseInt(sline[1]),
+                            authorIndices.get(aa));
+                }
+                u[aa] = Double.parseDouble(sline[2]);
+            }
+
+            reader.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while loading model from "
+                    + zipFilepath);
+        }
+    }
+
+    public void inputBillScore(String zipFilepath) {
+        if (verbose) {
+            logln("--- --- Loading bill scores from " + zipFilepath);
+        }
+        try {
+            String filename = IOUtils.removeExtension(IOUtils.getFilename(zipFilepath));
+            BufferedReader reader = IOUtils.getBufferedReader(zipFilepath, filename + BillFileExt);
+            x = new double[B];
+            y = new double[B];
+            for (int bb = 0; bb < B; bb++) {
+                String[] sline = reader.readLine().split("\t");
+                if (Integer.parseInt(sline[0]) != bb) {
+                    throw new MismatchRuntimeException(Integer.parseInt(sline[0]), bb);
+                }
+                if (Integer.parseInt(sline[1]) != billIndices.get(bb)) {
+                    throw new MismatchRuntimeException(Integer.parseInt(sline[1]),
+                            billIndices.get(bb));
+                }
+                x[bb] = Double.parseDouble(sline[2]);
+                y[bb] = Double.parseDouble(sline[3]);
+            }
+            reader.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while loading model from "
+                    + zipFilepath);
+        }
     }
 
     /**
@@ -1914,7 +1768,7 @@ public class SNHDPIdealPoint extends AbstractSampler {
                     .append("; ").append(node.getContent().getCountSum())
                     .append("; ").append(MiscUtils.formatDouble(node.eta))
                     .append(")");
-            if (node.getLevel() == 1) {
+            if (node.getLevel() == 1 && labelVocab != null) {
                 str.append(" ").append(labelVocab.get(node.getIndex()));
             }
             str.append("\n");
@@ -2214,6 +2068,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 File stateFile = new File(reportFolder, filename);
                 File partialResultFile = new File(iterPredFolder,
                         IOUtils.removeExtension(filename) + ".txt");
+                File assignmentFile = new File(iterPredFolder,
+                        IOUtils.removeExtension(filename) + ".zip");
                 File authorScoreFile = new File(iterPredFolder,
                         IOUtils.removeExtension(filename) + "-"
                         + AbstractVotePredictor.AuthorScoreFile);
@@ -2223,7 +2079,8 @@ public class SNHDPIdealPoint extends AbstractSampler {
                 SNHDPTestRunner runner = new SNHDPTestRunner(
                         sampler, stateFile, newDocIndices, newWords,
                         newAuthors, newAuthorIndices, testVotes,
-                        partialResultFile, authorScoreFile, voteScoreFile);
+                        partialResultFile, authorScoreFile, voteScoreFile,
+                        assignmentFile);
                 Thread thread = new Thread(runner);
                 threads.add(thread);
                 partPredFiles.add(partialResultFile);
@@ -2269,6 +2126,7 @@ class SNHDPTestRunner implements Runnable {
     File predictionFile;
     File authorScoreFile;
     File voteScoreFile;
+    File assignmentFile;
 
     public SNHDPTestRunner(SNHDPIdealPoint sampler,
             File stateFile,
@@ -2279,7 +2137,8 @@ class SNHDPTestRunner implements Runnable {
             boolean[][] testVotes,
             File outputFile,
             File authorScoreFile,
-            File voteScoreFile) {
+            File voteScoreFile,
+            File assignmentFile) {
         this.sampler = sampler;
         this.stateFile = stateFile;
         this.testDocIndices = newDocIndices;
@@ -2290,6 +2149,7 @@ class SNHDPTestRunner implements Runnable {
         this.predictionFile = outputFile;
         this.authorScoreFile = authorScoreFile;
         this.voteScoreFile = voteScoreFile;
+        this.assignmentFile = assignmentFile;
     }
 
     @Override
@@ -2302,11 +2162,10 @@ class SNHDPTestRunner implements Runnable {
         testSampler.configure(sampler);
         testSampler.setTestConfigurations(sampler.getBurnIn(),
                 sampler.getMaxIters(), sampler.getSampleLag());
-
+        testSampler.setupData(testDocIndices, testWords, testAuthors, null,
+                testAuthorIndices, null, testVotes);
         try {
-            testSampler.test(stateFile, testDocIndices, testWords, testAuthors,
-                    testAuthorIndices, testVotes,
-                    predictionFile, authorScoreFile, voteScoreFile);
+            testSampler.test(stateFile, predictionFile, assignmentFile);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException();

@@ -66,6 +66,45 @@ public class HeldoutAuthorDebatePredExpt extends HeldoutAuthorPredExpt {
         this.evaluate();
     }
 
+    @Override
+    public void analyze() {
+        if (verbose) {
+            logln("Analyzing ...");
+        }
+        ArrayList<Integer> runningFolds = new ArrayList<Integer>();
+        if (cmd.hasOption("fold")) {
+            String foldList = cmd.getOptionValue("fold");
+            for (String f : foldList.split(",")) {
+                runningFolds.add(Integer.parseInt(f));
+            }
+        }
+
+        loadFormattedData();
+
+        getKeyvoteBills();
+
+        setupSampling();
+
+        File configureFolder = new File(new File(experimentPath, congressNum),
+                getConfiguredExptFolder());
+
+        for (int ff = 0; ff < numFolds; ff++) {
+            if (!runningFolds.isEmpty() && !runningFolds.contains(ff)) {
+                continue;
+            }
+            if (verbose) {
+                logln("--- Running fold " + ff);
+            }
+
+            File foldFolder = new File(configureFolder, "fold-" + ff);
+            IOUtils.createFolder(foldFolder);
+
+            inputCrossValidatedData(ff);
+
+            analyzeErrorMultipleModels(foldFolder);
+        }
+    }
+
     /**
      * Input the cross-validated data from a fold.
      *
@@ -90,7 +129,7 @@ public class HeldoutAuthorDebatePredExpt extends HeldoutAuthorPredExpt {
         File cvFolder = new File(processedDataFolder, super.getConfiguredExptFolder());
         try {
             if (verbose) {
-                logln("--- Loading fold " + ff);
+                logln("--- Loading fold " + ff + " from " + cvFolder);
             }
 
             BufferedReader reader = IOUtils.getBufferedReader(new File(cvFolder,
@@ -148,7 +187,8 @@ public class HeldoutAuthorDebatePredExpt extends HeldoutAuthorPredExpt {
             }
         } catch (IOException | RuntimeException e) {
             e.printStackTrace();
-            throw new RuntimeException("Exception while inputing fold " + ff);
+            throw new RuntimeException("Exception while inputing fold " + ff
+                    + " from " + cvFolder);
         }
     }
 
@@ -182,6 +222,9 @@ public class HeldoutAuthorDebatePredExpt extends HeldoutAuthorPredExpt {
                     break;
                 case "evaluate":
                     expt.evaluate();
+                    break;
+                case "analyze":
+                    expt.analyze();
                     break;
                 default:
                     throw new RuntimeException("Run mode " + runMode + " is not supported");

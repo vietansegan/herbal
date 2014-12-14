@@ -29,7 +29,7 @@ public abstract class AbstractVotePredictor extends AbstractModel {
     public AbstractVotePredictor(String name) {
         super(name);
     }
-    
+
     /**
      * Output author scores.
      *
@@ -244,6 +244,8 @@ public abstract class AbstractVotePredictor extends AbstractModel {
         int posCount = 0;
         int negCount = 0;
         int correctCount = 0;
+        double mae = 0.0;
+        double mse = 0.0;
         Set<String> withVotes = new HashSet<>();
         ArrayList<String> voteList = new ArrayList<>();
         ArrayList<Double> voteScores = new ArrayList<>();
@@ -256,6 +258,8 @@ public abstract class AbstractVotePredictor extends AbstractModel {
                 double val = predictedValues[aa].get(vv);
                 voteList.add(key);
                 voteScores.add(val);
+                mae += Math.abs(votes[aa][vv] - val);
+                mse += Math.pow(votes[aa][vv] - val, 2);
 
                 if (votes[aa][vv] == Vote.WITH) {
                     withVotes.add(key);
@@ -284,6 +288,8 @@ public abstract class AbstractVotePredictor extends AbstractModel {
         measurements.add(new Measurement("loglikelihood", llh));
         measurements.add(new Measurement("avg-loglikelihood", llh / count));
         measurements.add(new Measurement("accuracy", (double) correctCount / count));
+        measurements.add(new Measurement("mae", (double) mae / count));
+        measurements.add(new Measurement("mse", (double) mse / count));
 
         // compute ranking performances
         double[] scores = new double[voteScores.size()];

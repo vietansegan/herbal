@@ -1,5 +1,6 @@
 package experiment.percongress;
 
+import static core.AbstractExperiment.max_iters;
 import core.AbstractModel;
 import core.AbstractSampler.InitialState;
 import data.Congress;
@@ -12,6 +13,7 @@ import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Random;
@@ -22,8 +24,10 @@ import util.CLIUtils;
 import util.IOUtils;
 import util.SparseVector;
 import util.govtrack.GTLegislator;
-import votepredictor.AbstractTopicBasedIdealPoint.WordWeightType;
+import votepredictor.textidealpoint.AbstractTextIdealPoint.WordWeightType;
 import votepredictor.AbstractVotePredictor;
+import votepredictor.LexicalIdealPoint;
+import votepredictor.LexicalSNLDAIdealPoint;
 import votepredictor.SLDAIdealPoint;
 import votepredictor.SLDAMultIdealPoint;
 import votepredictor.SNLDAIdealPoint;
@@ -83,6 +87,42 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         evaluate();
     }
 
+    public void analyze() {
+        if (verbose) {
+            logln("Analyzing ...");
+        }
+        ArrayList<Integer> runningFolds = new ArrayList<Integer>();
+        if (cmd.hasOption("fold")) {
+            String foldList = cmd.getOptionValue("fold");
+            for (String f : foldList.split(",")) {
+                runningFolds.add(Integer.parseInt(f));
+            }
+        }
+
+        loadFormattedData();
+
+        setupSampling();
+
+        File configureFolder = new File(new File(experimentPath, congressNum),
+                getConfiguredExptFolder());
+
+        for (int ff = 0; ff < numFolds; ff++) {
+            if (!runningFolds.isEmpty() && !runningFolds.contains(ff)) {
+                continue;
+            }
+            if (verbose) {
+                logln("--- Running fold " + ff);
+            }
+
+            File foldFolder = new File(configureFolder, "fold-" + ff);
+            IOUtils.createFolder(foldFolder);
+
+            inputCrossValidatedData(ff);
+
+            analyzeErrorMultipleModels(foldFolder);
+        }
+    }
+
     /**
      * Run a model.
      *
@@ -107,8 +147,17 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "bayesian-mult-ideal-point":
                 runBayesianMultIdealPoint(outputFolder);
                 break;
+            case "lexical-ideal-point":
+                runLexicalIdealPoint(outputFolder);
+                break;
             case "slda-ideal-point":
                 runSLDAIdealPoint(outputFolder);
+                break;
+            case "lexical-slda-ideal-point":
+                runLexicalSLDAIdealPoint(outputFolder);
+                break;
+            case "hybrid-slda-ideal-point":
+                runHybridSLDAIdealPoint(outputFolder);
                 break;
             case "slda-mult-ideal-point":
                 runSLDAMultIdealPoint(outputFolder);
@@ -116,11 +165,18 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "snlda-ideal-point":
                 runSNLDAIdealPoint(outputFolder);
                 break;
+            case "lexical-snlda-ideal-point":
+                runLexicalSNLDAIdealPoint(outputFolder);
+                break;
             case "snlda-mult-ideal-point":
                 runSNLDAMultIdealPoint(outputFolder);
                 break;
             case "snhdp-ideal-point":
                 runSNHDPIdealPoint(outputFolder);
+                break;
+            case "combine":
+                combineModel(outputFolder);
+                combineModelAuthorDependent(outputFolder);
                 break;
             case "none":
                 logln("Doing nothing :D");
@@ -139,6 +195,55 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
 
         if (cmd.hasOption("party")) {
             basename.append("-party");
+        }
+
+        LexicalIdealPoint lip = new LexicalIdealPoint();
+        if (cmd.hasOption("lip")) {
+            basename.append("-lip");
+
+            double rho = 0.1;
+            double sigma = 0.5;
+            double lambda = 5;
+            boolean tfidf = true;
+            int maxIters = 10000;
+            lip.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), rho, sigma, lambda,
+                    maxIters, tfidf);
+        }
+
+        // Lexical SNLDA
+        LexicalSNLDAIdealPoint lexsnlda = new LexicalSNLDAIdealPoint();
+        if (cmd.hasOption("lexicalsnlda")) {
+            basename.append("-lexical-snlda");
+
+            double[][] issuePhis;
+            if (cmd.hasOption("K")) {
+                int V = debateVoteData.getWordVocab().size();
+                int K = Integer.parseInt(cmd.getOptionValue("K"));
+                issuePhis = new double[K][V];
+                for (int kk = 0; kk < K; kk++) {
+                    Arrays.fill(issuePhis[kk], 1.0 / V);
+                }
+            } else {
+                issuePhis = estimateIssues();
+            }
+            int J = 3;
+            double[] alphas = new double[]{0.1, 0.1};
+            double[] betas = new double[]{1, 0.5, 0.1};
+            double[] gamma_means = new double[]{0.2, 0.2};
+            double[] gamma_scales = new double[]{100, 10};
+            double[] sigmas = new double[]{0, 2.5, 5};
+            double sigma = 2.5;
+            double rho = 0.05;
+            double lambda = 2.5;
+            boolean hasRootTopic = cmd.hasOption("roottopic");
+            lexsnlda.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), J,
+                    issuePhis, alphas, betas, gamma_means, gamma_scales,
+                    rho, sigmas, sigma, lambda, hasRootTopic,
+                    InitialState.RANDOM, PathAssumption.MAXIMAL, false,
+                    500, 1000, 50, 50);
+            lexsnlda.inputModel(lexsnlda.getFinalStateFile().getAbsolutePath());
         }
 
         // ============================= SLDA ==================================
@@ -191,7 +296,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             slda.configure(outputFolder.getAbsolutePath(),
                     debateVoteData.getWordVocab().size(), K,
                     alpha, beta, rho, mu, sigma, rate_alpha, rate_eta,
-                    wordWeightType, initState, paramOpt,
+                    initState, paramOpt,
                     burn_in, max_iters, sample_lag, report_interval);
             slda.inputModel(slda.getFinalStateFile().getAbsolutePath());
         }
@@ -202,7 +307,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             basename.append("-snlda");
 
             double[][] issuePhis = estimateIssues();
-            int J = 3;
+            int J = 4;
             double[] alphas = new double[]{0.1, 0.1};
             double[] betas = new double[]{1.0, 0.5, 0.1};
             double[] gamma_means = new double[]{0.2, 0.2};
@@ -237,7 +342,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             snlda.configure(outputFolder.getAbsolutePath(),
                     debateVoteData.getWordVocab().size(), J,
                     issuePhis, alphas, betas, gamma_means, gamma_scales,
-                    rho, mu, sigma, hasRootTopic, wordWeightType,
+                    rho, mu, sigma, hasRootTopic,
                     initState, pathAssumption, paramOpt,
                     burn_in, max_iters, sample_lag, report_interval);
         }
@@ -294,6 +399,33 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         if (cmd.hasOption("train")) {
             ArrayList<SparseVector[]> addFeatures = new ArrayList<>();
             ArrayList<Integer> numFeatures = new ArrayList<>();
+
+            if (cmd.hasOption("lip")) {
+                lip.setupData(trainDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        votes,
+                        trainAuthorIndices,
+                        trainBillIndices,
+                        trainVotes);
+                File trResultFolder = new File(new File(outputFolder, lip.getSamplerFolder()),
+                        TRAIN_PREFIX + RESULT_FOLDER);
+                SparseVector[] authorFeatures = lip.inputAuthorFeatures(new File(trResultFolder, "author.features"));
+                addFeatures.add(authorFeatures);
+                numFeatures.add(1);
+            }
+
+            if (cmd.hasOption("lexicalsnlda")) {
+                lexsnlda.setupData(trainDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        votes, trainAuthorIndices, trainBillIndices,
+                        trainVotes);
+                lexsnlda.inputFinalState();
+                SparseVector[] authorFeatures = lexsnlda.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
 
             if (cmd.hasOption("party")) {
                 SparseVector[] authorParties = new SparseVector[trainAuthorIndices.size()];
@@ -388,6 +520,21 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             ArrayList<SparseVector[]> addFeatures = new ArrayList<>();
             ArrayList<Integer> numFeatures = new ArrayList<>();
 
+            if (cmd.hasOption("lip")) {
+                lip.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                File teResultFolder = new File(new File(outputFolder, lip.getSamplerFolder()),
+                        TEST_PREFIX + RESULT_FOLDER);
+                SparseVector[] authorFeatures = lip.inputAuthorFeatures(new File(teResultFolder, "author.features"));
+                addFeatures.add(authorFeatures);
+                numFeatures.add(1);
+            }
+
             if (cmd.hasOption("party")) {
                 SparseVector[] authorParties = new SparseVector[testAuthorIndices.size()];
                 for (int aa = 0; aa < testAuthorIndices.size(); aa++) {
@@ -407,7 +554,23 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                 addFeatures.add(authorParties);
                 numFeatures.add(2);
             }
-            
+
+            if (cmd.hasOption("lexicalsnlda")) {
+                lexsnlda.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                File samplerFolder = new File(outputFolder, lexsnlda.getSamplerFolder());
+                lexsnlda.inputAssignments(new File(samplerFolder,
+                        "iter-predictions/iter-1000.zip").getAbsolutePath());
+                SparseVector[] authorFeatures = lexsnlda.getAuthorFeatures();
+                addFeatures.add(authorFeatures);
+                numFeatures.add(authorFeatures[0].getDimension());
+            }
+
             if (cmd.hasOption("slda")) {
                 slda.setupData(testDebateIndices,
                         debateVoteData.getWords(),
@@ -661,7 +824,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
         File cvFolder = new File(processedDataFolder, getConfiguredExptFolder());
         try {
             if (verbose) {
-                logln("--- Loading fold " + ff);
+                logln("--- Loading fold " + ff + " from " + cvFolder);
             }
 
             BufferedReader reader = IOUtils.getBufferedReader(new File(cvFolder,
@@ -715,7 +878,8 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             }
         } catch (IOException | RuntimeException e) {
             e.printStackTrace();
-            throw new RuntimeException("Exception while inputing fold " + ff);
+            throw new RuntimeException("Exception while inputing fold " + ff
+                    + " from " + cvFolder);
         }
     }
 
@@ -752,6 +916,9 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
                     break;
                 case "create-cv":
                     expt.preprocess();
+                    break;
+                case "analyze":
+                    expt.analyze();
                     break;
                 default:
                     throw new RuntimeException("Run mode " + runMode + " is not supported");

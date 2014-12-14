@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -48,11 +49,13 @@ import util.RankingItem;
 import util.RankingItemList;
 import util.StatUtils;
 import util.normalizer.MinMaxNormalizer;
-import votepredictor.AbstractTopicBasedIdealPoint.WordWeightType;
 import votepredictor.BayesianMultIdealPoint;
 import votepredictor.BayesianMultIdealPointOWLQN;
+import votepredictor.LexicalIdealPoint;
+import votepredictor.textidealpoint.LexicalSLDAIdealPoint;
+import votepredictor.LexicalSNLDAIdealPoint;
 import votepredictor.SLDAMultIdealPoint;
-import votepredictor.SNLDAMultIdealPoint;
+import votepredictor.hybrid.HybridSLDAIdealPoint;
 
 /**
  *
@@ -305,7 +308,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 new File(congressFolder, "bills").getAbsolutePath(),
                 new File(congressFolder, "debates").getAbsolutePath(),
                 new File(congressFolder, "legislators.txt").getAbsolutePath(),
-                null, null);
+                "/fs/clip-political/vietan/data/govtrack/addinfo/112th-House-Republicans.txt",
+                null);
         data.setCongressYear(fwYears);
 
         // load FWScore with FW_ID
@@ -380,9 +384,10 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         legislatorProperties.add(GTLegislator.FW_ID);
         legislatorProperties.add(GTLegislator.NAME);
         legislatorProperties.add(GTLegislator.PARTY);
-        legislatorProperties.add("type");
+        legislatorProperties.add(GTLegislator.TYPE);
         legislatorProperties.add(GTLegislator.NOMINATE_SCORE1);
         legislatorProperties.add(GTLegislator.FW_SCORE);
+        legislatorProperties.add(GTLegislator.TP_Caucus);
 
         CorpusProcessor corpProc = TextDataset.createCorpusProcessor();
         debateVoteData = new AuthorVoteTextDataset(data.getName(), processedDataFolder, corpProc);
@@ -433,6 +438,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 leg.getProperty(GTLegislator.NOMINATE_SCORE1));
         phaseData.setAuthorProperty(lid, GTLegislator.FW_SCORE,
                 leg.getProperty(GTLegislator.FW_SCORE));
+        phaseData.setAuthorProperty(lid, GTLegislator.TP_Caucus,
+                leg.getProperty(GTLegislator.TP_Caucus));
     }
 
     protected void loadFormattedData() {
@@ -533,14 +540,26 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             case "bayesian-mult-ideal-point-owlqn":
                 runBayesianMultIdealPointOWLQN(outputFolder);
                 break;
+            case "lexical-ideal-point":
+                runLexicalIdealPoint(outputFolder);
+                break;
             case "slda-ideal-point":
                 runSLDAIdealPoint(outputFolder);
+                break;
+            case "lexical-slda-ideal-point":
+                runLexicalSLDAIdealPoint(outputFolder);
+                break;
+            case "hybrid-slda-ideal-point":
+                runHybridSLDAIdealPoint(outputFolder);
                 break;
             case "slda-mult-ideal-point":
                 runSLDAMultIdealPoint(outputFolder);
                 break;
             case "snlda-ideal-point":
                 runSNLDAIdealPoint(outputFolder);
+                break;
+            case "lexical-snlda-ideal-point":
+                runLexicalSNLDAIdealPoint(outputFolder);
                 break;
             case "snlda-mult-ideal-point":
                 runSNLDAMultIdealPoint(outputFolder);
@@ -642,7 +661,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         sampler.configure(estimateFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), 20,
                 0.1, 0.1, 1.0, 0.0, 2.5, 1.0, 0.01,
-                WordWeightType.NONE,
                 initState, paramOpt,
                 10, 25, 3, 1);
         sampler.setupData(trainDebateIndices,
@@ -1041,6 +1059,113 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
     }
 
+    protected void runLexicalIdealPoint(File outputFolder) {
+        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 1.0);
+        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
+        double lambda = CLIUtils.getDoubleArgument(cmd, "lambda", 2.5);
+        double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
+        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 2.5);
+
+        LexicalIdealPoint lip = new LexicalIdealPoint();
+        if (cmd.hasOption("lambda")) {
+            lip.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), rho, sigma, lambda,
+                    max_iters, cmd.hasOption("tfidf"));
+        } else {
+            lip.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), rho, sigma, l1, l2,
+                    max_iters, cmd.hasOption("tfidf"));
+        }
+        File samplerFolder = new File(outputFolder, lip.getSamplerFolder());
+        IOUtils.createFolder(samplerFolder);
+
+        File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
+        File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+
+        if (cmd.hasOption("train")) {
+            IOUtils.createFolder(trResultFolder);
+
+            lip.setupData(trainDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    votes,
+                    trainAuthorIndices,
+                    trainBillIndices,
+                    trainVotes);
+            lip.initialize();
+            lip.iterate();
+            SparseVector[] predictions = lip.predictInMatrix();
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
+            lip.outputState(new File(samplerFolder, MODEL_FILE));
+            lip.outputLexicalRegressionParameters(new File(samplerFolder, "lexical.txt"),
+                    debateVoteData.getWordVocab());
+            lip.outputAuthorFeatures(new File(trResultFolder, "author.features"));
+
+            outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
+                    lip.getUs(),
+                    debateVoteData.getAuthorTable());
+            outputVoteScores(new File(samplerFolder, VoteScoreFile),
+                    debateVoteData.getVoteVocab(),
+                    trainBillIndices,
+                    lip.getXs(), lip.getYs(),
+                    debateVoteData.getVoteTable());
+        }
+
+        if (cmd.hasOption("testvote")) {
+            IOUtils.createFolder(teResultFolder);
+
+            lip.setupData(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
+            lip.inputModel(new File(samplerFolder, MODEL_FILE).toString());
+            SparseVector[] predictions = lip.predictInMatrix();
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("testauthor")) {
+            IOUtils.createFolder(teResultFolder);
+
+            lip.setupData(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
+            lip.inputModel(new File(samplerFolder, MODEL_FILE).toString());
+            SparseVector[] predictions = lip.predictOutMatrix();
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+
+            lip.outputAuthorFeatures(new File(teResultFolder, "author.features"));
+            outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                    debateVoteData.getAuthorVocab(),
+                    testAuthorIndices,
+                    testVotes,
+                    lip.getPredictedUs(),
+                    debateVoteData.getAuthorTable());
+        }
+
+        if (cmd.hasOption("analyzeerror")) {
+            analyzeError(samplerFolder);
+        }
+    }
+
     protected void runSLDAIdealPoint(File outputFolder) {
         int K;
         double[][] issuePhis;
@@ -1059,20 +1184,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         double rate_eta = CLIUtils.getDoubleArgument(cmd, "rate-eta", 0.01);
         double rho = CLIUtils.getDoubleArgument(cmd, "rho", 1.0);
 
-        String wordWeightTypeStr = CLIUtils.getStringArgument(cmd, "wwt", "none");
-        WordWeightType wordWeightType;
-        switch (wordWeightTypeStr) {
-            case "none":
-                wordWeightType = WordWeightType.NONE;
-                break;
-            case "tfidf":
-                wordWeightType = WordWeightType.TFIDF;
-                break;
-            default:
-                throw new RuntimeException("Word weight type " + wordWeightTypeStr
-                        + " not supported");
-        }
-
         SLDAIdealPoint sampler = new SLDAIdealPoint();
         sampler.setVerbose(verbose);
         sampler.setDebug(debug);
@@ -1085,7 +1196,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), K,
                 alpha, beta, rho, mu, sigma, rate_alpha, rate_eta,
-                wordWeightType, initState, paramOpt,
+                initState, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
         IOUtils.createFolder(samplerFolder);
@@ -1138,7 +1249,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     testBillIndices,
                     testVotes);
             sampler.inputFinalState();
-            SparseVector[] predictions = sampler.predictInMatrix();
+            SparseVector[] predictions = sampler.predictInMatrixMultiples();
 
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
@@ -1189,7 +1300,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
     }
 
-    protected void runSLDAMultIdealPoint(File outputFolder) {
+    protected void runLexicalSLDAIdealPoint(File outputFolder) {
         int K;
         double[][] issuePhis;
         if (cmd.hasOption("K")) {
@@ -1201,13 +1312,11 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
         double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
         double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
-        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 2.5);
         double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
-        double gamma = CLIUtils.getDoubleArgument(cmd, "gamma", 2.5);
-        double lexl1 = CLIUtils.getDoubleArgument(cmd, "lexl1", 0.0);
-        double lexl2 = CLIUtils.getDoubleArgument(cmd, "lexl2", 0.0);
+        double lambda = CLIUtils.getDoubleArgument(cmd, "lambda", 2.5);
+        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 0.1);
 
-        SLDAMultIdealPoint sampler = new SLDAMultIdealPoint();
+        LexicalSLDAIdealPoint sampler = new LexicalSLDAIdealPoint();
         sampler.setVerbose(verbose);
         sampler.setDebug(debug);
         sampler.setLog(true);
@@ -1218,7 +1327,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), K,
-                alpha, beta, rho, sigma, gamma, lexl1, lexl2,
+                alpha, beta, rho, sigma, lambda,
                 initState, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
@@ -1241,12 +1350,22 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
                         numTopWords, billData.getTopicVocab());
             }
-            sampler.outputAuthorIdealPoint(new File(samplerFolder, AuthorScoreFile), null);
 
-            // training predictions
+            outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
+                    sampler.getUs(),
+                    debateVoteData.getAuthorTable());
+            outputVoteScores(new File(samplerFolder, VoteScoreFile),
+                    debateVoteData.getVoteVocab(),
+                    trainBillIndices,
+                    sampler.getXs(), sampler.getYs(),
+                    debateVoteData.getVoteTable());
+
             File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(trResultFolder);
-            SparseVector[] predictions = sampler.testInMatrix();
+            SparseVector[] predictions = sampler.predictInMatrix();
             AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
@@ -1261,7 +1380,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     testAuthorIndices,
                     testBillIndices,
                     testVotes);
-            SparseVector[] predictions = sampler.testInMatrix();
+            sampler.inputFinalState();
+            SparseVector[] predictions = sampler.predictInMatrixMultiples();
+
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
@@ -1274,6 +1395,131 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
 
+            SparseVector[] predictions;
+            if (cmd.hasOption("parallel")) {
+                predictions = LexicalSLDAIdealPoint.parallelTest(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        testAuthorIndices,
+                        testVotes,
+                        new File(samplerFolder, AbstractSampler.IterPredictionFolder),
+                        sampler);
+            } else {
+                sampler.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                predictions = sampler.test(null, null,
+                        new File(samplerFolder, TEST_PREFIX + AssignmentFile));
+                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                        debateVoteData.getAuthorVocab(),
+                        testAuthorIndices,
+                        testVotes,
+                        sampler.getPredictedUs(),
+                        debateVoteData.getAuthorTable());
+            }
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("analyzeerror")) {
+            analyzeError(samplerFolder);
+        }
+    }
+
+    protected void runHybridSLDAIdealPoint(File outputFolder) {
+        int K;
+        double[][] issuePhis;
+        if (cmd.hasOption("K")) {
+            issuePhis = null;
+            K = Integer.parseInt(cmd.getOptionValue("K"));
+        } else {
+            issuePhis = estimateIssues();
+            K = issuePhis.length;
+        }
+        double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
+        double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
+        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 0.1);
+        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 0.5);
+        double gamma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
+        double lambda = CLIUtils.getDoubleArgument(cmd, "lambda", 5);
+        double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
+        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 0.001);
+
+        HybridSLDAIdealPoint sampler = new HybridSLDAIdealPoint();
+        sampler.setVerbose(verbose);
+        sampler.setDebug(debug);
+        sampler.setLog(true);
+        sampler.setReport(true);
+        sampler.setWordVocab(debateVoteData.getWordVocab());
+        sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+        sampler.setVoteVocab(debateVoteData.getVoteVocab());
+
+        if (cmd.hasOption("lambda")) {
+            sampler.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), K,
+                    alpha, beta, rho, sigma, gamma, lambda,
+                    initState, paramOpt,
+                    burn_in, max_iters, sample_lag, report_interval);
+        } else {
+            sampler.configure(outputFolder.getAbsolutePath(),
+                    debateVoteData.getWordVocab().size(), K,
+                    alpha, beta, rho, sigma, gamma, l1, l2,
+                    initState, paramOpt,
+                    burn_in, max_iters, sample_lag, report_interval);
+        }
+
+        File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
+        IOUtils.createFolder(samplerFolder);
+
+        if (cmd.hasOption("train")) {
+            sampler.setupData(trainDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    votes,
+                    trainAuthorIndices,
+                    trainBillIndices,
+                    trainVotes);
+            sampler.initialize(issuePhis);
+            sampler.metaIterate();
+            if (issuePhis == null) {
+                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
+                        numTopWords);
+            } else {
+                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
+                        numTopWords, billData.getTopicVocab());
+            }
+
+            sampler.analyzeAuthors(new File(samplerFolder, "authors.analyze"), 
+                    debateVoteData.getAuthorTable());
+
+            outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
+                    sampler.getUs(),
+                    debateVoteData.getAuthorTable());
+            outputVoteScores(new File(samplerFolder, VoteScoreFile),
+                    debateVoteData.getVoteVocab(),
+                    trainBillIndices,
+                    sampler.getXs(), sampler.getYs(),
+                    debateVoteData.getVoteTable());
+
+            File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(trResultFolder);
+            SparseVector[] predictions = sampler.predictInMatrix();
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
+        }
+
+        if (cmd.hasOption("testvote")) { // average over multiple test chains
             sampler.setupData(testDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
@@ -1281,20 +1527,196 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     testAuthorIndices,
                     testBillIndices,
                     testVotes);
-            SparseVector[] predictions = sampler.test(null, null,
-                    new File(samplerFolder, TEST_PREFIX + AssignmentFile));
-            String predFile = PREDICTION_FILE;
-            String resultFile = RESULT_FILE;
-            AbstractVotePredictor.outputPredictions(new File(teResultFolder, predFile),
+            sampler.inputFinalState();
+            SparseVector[] predictions = sampler.predictInMatrixMultiples();
+
+            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(teResultFolder);
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
                     votes, predictions);
-            AbstractModel.outputPerformances(new File(teResultFolder, resultFile),
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
                     AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("testauthor")) {
+            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+            IOUtils.createFolder(teResultFolder);
+
+            SparseVector[] predictions;
+            if (cmd.hasOption("parallel")) {
+                throw new RuntimeException("Not supported");
+//                predictions = SLDAIdealPoint.parallelTest(testDebateIndices,
+//                        debateVoteData.getWords(),
+//                        debateVoteData.getAuthors(),
+//                        testAuthorIndices,
+//                        testVotes,
+//                        new File(samplerFolder, AbstractSampler.IterPredictionFolder),
+//                        sampler);
+            } else {
+                sampler.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                predictions = sampler.test(null, null,
+                        new File(samplerFolder, TEST_PREFIX + AssignmentFile));
+                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                        debateVoteData.getAuthorVocab(),
+                        testAuthorIndices,
+                        testVotes,
+                        sampler.getPredictedUs(),
+                        debateVoteData.getAuthorTable());
+                sampler.analyzeAuthors(new File(teResultFolder, "authors.analyze"),
+                        debateVoteData.getAuthorTable());
+            }
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("analyzeerror")) {
+            analyzeError(samplerFolder);
+        }
+    }
+
+    protected void runSLDAMultIdealPoint(File outputFolder) {
+        int K;
+        double[][] issuePhis;
+        if (cmd.hasOption("K")) {
+            issuePhis = null;
+            K = Integer.parseInt(cmd.getOptionValue("K"));
+        } else {
+            issuePhis = estimateIssues();
+            K = issuePhis.length;
+        }
+        double alpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
+        double beta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
+        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 2.5);
+        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 2.5);
+        double gamma = CLIUtils.getDoubleArgument(cmd, "gamma", 2.5);
+        double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
+        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 2.5);
+
+        SLDAMultIdealPoint sampler = new SLDAMultIdealPoint();
+        sampler.setVerbose(verbose);
+        sampler.setDebug(debug);
+        sampler.setLog(true);
+        sampler.setReport(true);
+        sampler.setWordVocab(debateVoteData.getWordVocab());
+        sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+        sampler.setVoteVocab(debateVoteData.getVoteVocab());
+
+        sampler.configure(outputFolder.getAbsolutePath(),
+                debateVoteData.getWordVocab().size(), K,
+                alpha, beta, rho, sigma, gamma, l1, l2,
+                initState, paramOpt,
+                burn_in, max_iters, sample_lag, report_interval);
+        File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
+        IOUtils.createFolder(samplerFolder);
+
+        File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+        File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
+
+        if (cmd.hasOption("train")) {
+            sampler.setupData(trainDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    votes,
+                    trainAuthorIndices,
+                    trainBillIndices,
+                    trainVotes);
+            sampler.initialize(issuePhis);
+            sampler.iterate();
+            if (issuePhis == null) {
+                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
+                        numTopWords);
+            } else {
+                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
+                        numTopWords, billData.getTopicVocab());
+            }
+            sampler.outputAuthorIdealPoints(new File(samplerFolder, AuthorScoreFile),
+                    sampler.getUs(), null);
+            sampler.outputVoteIdealPoints(new File(samplerFolder, VoteScoreFile),
+                    sampler.getXs(), null);
+
+            // training predictions
+            IOUtils.createFolder(trResultFolder);
+            SparseVector[] predictions = sampler.predictInMatrix();
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
+        }
+
+        if (cmd.hasOption("testvote")) { // average over multiple test chains
+            IOUtils.createFolder(teResultFolder);
+            sampler.setupData(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
+            SparseVector[] predictions = sampler.predictInMatrixMultiples();
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("testauthor")) {
+            IOUtils.createFolder(teResultFolder);
+            SparseVector[] predictions;
+            if (cmd.hasOption("parallel")) {
+                predictions = SLDAMultIdealPoint.parallelTest(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        testAuthorIndices,
+                        testVotes,
+                        new File(samplerFolder, AbstractSampler.IterPredictionFolder),
+                        sampler);
+            } else {
+                sampler.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                predictions = sampler.test(null, null,
+                        new File(samplerFolder, TEST_PREFIX + AssignmentFile));
+                sampler.outputAuthorIdealPoints(new File(teResultFolder, AuthorScoreFile),
+                        sampler.getPredictedUs(), null);
+                sampler.outputVoteIdealPoints(new File(teResultFolder, VoteScoreFile),
+                        sampler.getXs(), null);
+            }
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("analyzeerror")) {
+            analyzeError(samplerFolder);
         }
     }
 
     protected void runSNLDAIdealPoint(File outputFolder) {
         // estimate seeded issues
-        double[][] issuePhis = estimateIssues();
+        double[][] issuePhis;
+        if (cmd.hasOption("K")) {
+            int V = debateVoteData.getWordVocab().size();
+            int K = Integer.parseInt(cmd.getOptionValue("K"));
+            issuePhis = new double[K][V];
+            for (int kk = 0; kk < K; kk++) {
+                Arrays.fill(issuePhis[kk], 1.0 / V);
+            }
+        } else {
+            issuePhis = estimateIssues();
+        }
         int J = CLIUtils.getIntegerArgument(cmd, "J", 3);
         double[] alphas = CLIUtils.getDoubleArrayArgument(cmd, "alphas",
                 new double[]{0.1, 0.1}, ",");
@@ -1316,7 +1738,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         sampler.setReport(true);
         sampler.setWordVocab(debateVoteData.getWordVocab());
         sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
-        sampler.setLabelVocab(billData.getTopicVocab());
+        if (!cmd.hasOption("K")) {
+            sampler.setLabelVocab(billData.getTopicVocab());
+        }
 
         PathAssumption pathAssumption = PathAssumption.MAXIMAL;
         String path = CLIUtils.getStringArgument(cmd, "path", "max");
@@ -1331,28 +1755,17 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 throw new RuntimeException("Path assumption " + path + " not supported");
         }
 
-        String wordWeightTypeStr = CLIUtils.getStringArgument(cmd, "wwt", "none");
-        WordWeightType wordWeightType;
-        switch (wordWeightTypeStr) {
-            case "none":
-                wordWeightType = WordWeightType.NONE;
-                break;
-            case "tfidf":
-                wordWeightType = WordWeightType.TFIDF;
-                break;
-            default:
-                throw new RuntimeException("Word weight type " + wordWeightTypeStr
-                        + " not supported");
-        }
-
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), J,
                 issuePhis, alphas, betas, gamma_means, gamma_scales,
-                rho, mu, sigma, hasRootTopic, wordWeightType,
+                rho, mu, sigma, hasRootTopic,
                 initState, pathAssumption, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
         IOUtils.createFolder(samplerFolder);
+
+        File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+        File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
 
         if (cmd.hasOption("train")) {
             sampler.setupData(trainDebateIndices,
@@ -1375,7 +1788,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     debateVoteData.getVoteTable());
 
             SparseVector[] predictions = sampler.predictInMatrix();
-            File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(trResultFolder);
             AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
                     votes, predictions);
@@ -1384,6 +1796,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testvote")) { // average over multiple test chains
+            IOUtils.createFolder(teResultFolder);
             sampler.setupData(testDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
@@ -1391,11 +1804,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     testAuthorIndices,
                     testBillIndices,
                     testVotes);
-            sampler.inputFinalState();
-            SparseVector[] predictions = sampler.predictInMatrix();
-
-            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
-            IOUtils.createFolder(teResultFolder);
+            SparseVector[] predictions = sampler.predictInMatrixMultiples();
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
@@ -1403,9 +1812,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testauthor")) {
-            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
-
             SparseVector[] predictions;
             if (cmd.hasOption("parallel")) {
                 File iterPredFolderPath = new File(samplerFolder,
@@ -1417,35 +1824,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         testVotes,
                         iterPredFolderPath,
                         sampler);
-
-                // average author scores
-                String[] filenames = iterPredFolderPath.list();
-                double[] authorScores = null;
-                int count = 0;
-                for (String filename : filenames) {
-                    if (!filename.contains(AbstractVotePredictor.AuthorScoreFile)) {
-                        continue;
-                    }
-                    double[] partAuthorScores = AbstractVotePredictor.inputAuthorScores(
-                            new File(iterPredFolderPath, filename));
-                    if (authorScores == null) {
-                        authorScores = partAuthorScores;
-                    } else {
-                        for (int aa = 0; aa < authorScores.length; aa++) {
-                            authorScores[aa] += partAuthorScores[aa];
-                        }
-                    }
-                    count++;
-                }
-                for (int aa = 0; aa < authorScores.length; aa++) {
-                    authorScores[aa] /= count;
-                }
-                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
-                        debateVoteData.getAuthorVocab(),
-                        testAuthorIndices,
-                        testVotes,
-                        authorScores,
-                        debateVoteData.getAuthorTable());
 
             } else {
                 sampler.setupData(testDebateIndices,
@@ -1492,10 +1870,28 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     debateVoteData.getAuthorTable(),
                     GovtrackUrl + congressNum + "/cr/");
         }
+
+        if (cmd.hasOption("testeval")) {
+            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(
+                    new File(teResultFolder, PREDICTION_FILE));
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
     }
 
-    protected void runSNLDAMultIdealPoint(File outputFolder) {
-        double[][] issuePhis = estimateIssues();
+    protected void runLexicalSNLDAIdealPoint(File outputFolder) {
+        // estimate seeded issues
+        double[][] issuePhis;
+        if (cmd.hasOption("K")) {
+            int V = debateVoteData.getWordVocab().size();
+            int K = Integer.parseInt(cmd.getOptionValue("K"));
+            issuePhis = new double[K][V];
+            for (int kk = 0; kk < K; kk++) {
+                Arrays.fill(issuePhis[kk], 1.0 / V);
+            }
+        } else {
+            issuePhis = estimateIssues();
+        }
         int J = CLIUtils.getIntegerArgument(cmd, "J", 3);
         double[] alphas = CLIUtils.getDoubleArrayArgument(cmd, "alphas",
                 new double[]{0.1, 0.1}, ",");
@@ -1505,23 +1901,23 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 new double[]{0.2, 0.2}, ",");
         double[] gamma_scales = CLIUtils.getDoubleArrayArgument(cmd, "gamma-scales",
                 new double[]{10, 1}, ",");
-        double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
         double[] sigmas = CLIUtils.getDoubleArrayArgument(cmd, "sigmas",
-                new double[]{0.0, 1.0, 2.5}, ",");
-        double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
-        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 1.0);
-        double lexl1 = CLIUtils.getDoubleArgument(cmd, "lexl1", 0.0);
-        double lexl2 = CLIUtils.getDoubleArgument(cmd, "lexl2", 0.0);
+                new double[]{0.0, 2.5, 5}, ",");
+        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 10);
+        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 0.05);
+        double lambda = CLIUtils.getDoubleArgument(cmd, "lambda", 2.5);
         boolean hasRootTopic = cmd.hasOption("roottopic");
 
-        SNLDAMultIdealPoint sampler = new SNLDAMultIdealPoint();
+        LexicalSNLDAIdealPoint sampler = new LexicalSNLDAIdealPoint();
         sampler.setVerbose(verbose);
         sampler.setDebug(debug);
         sampler.setLog(true);
         sampler.setReport(true);
         sampler.setWordVocab(debateVoteData.getWordVocab());
         sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
-        sampler.setLabelVocab(billData.getTopicVocab());
+        if (!cmd.hasOption("K")) {
+            sampler.setLabelVocab(billData.getTopicVocab());
+        }
 
         PathAssumption pathAssumption = PathAssumption.MAXIMAL;
         String path = CLIUtils.getStringArgument(cmd, "path", "max");
@@ -1539,11 +1935,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         sampler.configure(outputFolder.getAbsolutePath(),
                 debateVoteData.getWordVocab().size(), J,
                 issuePhis, alphas, betas, gamma_means, gamma_scales,
-                mu, sigmas, l1, l2, lexl1, lexl2, hasRootTopic,
+                rho, sigmas, sigma, lambda, hasRootTopic,
                 initState, pathAssumption, paramOpt,
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
         IOUtils.createFolder(samplerFolder);
+
+        File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+        File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
 
         if (cmd.hasOption("train")) {
             sampler.setupData(trainDebateIndices,
@@ -1553,34 +1952,130 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     trainVotes);
             sampler.initialize();
             sampler.iterate();
+            sampler.outputWords(new File(samplerFolder, "lex-words.txt"));
             sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile), numTopWords);
+            outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
+                    debateVoteData.getAuthorVocab(),
+                    trainAuthorIndices,
+                    trainVotes,
+                    sampler.getUs(),
+                    debateVoteData.getAuthorTable());
+            outputVoteScores(new File(samplerFolder, VoteScoreFile),
+                    debateVoteData.getVoteVocab(), this.trainBillIndices,
+                    sampler.getXs(), sampler.getYs(),
+                    debateVoteData.getVoteTable());
+
+            SparseVector[] predictions = sampler.predictInMatrix();
+            IOUtils.createFolder(trResultFolder);
+            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
+        }
+
+        if (cmd.hasOption("testvote")) { // average over multiple test chains
+            IOUtils.createFolder(teResultFolder);
+            sampler.setupData(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
+            SparseVector[] predictions = sampler.predictInMatrixMultiples();
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
         }
 
         if (cmd.hasOption("testauthor")) {
-            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
+            SparseVector[] predictions;
+            if (cmd.hasOption("parallel")) {
+                File iterPredFolderPath = new File(samplerFolder,
+                        AbstractSampler.IterPredictionFolder);
+                predictions = LexicalSNLDAIdealPoint.parallelTest(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        testAuthorIndices,
+                        testVotes,
+                        iterPredFolderPath,
+                        sampler);
 
-            SparseVector[] predictions = sampler.test(null,
-                    testDebateIndices,
+            } else {
+                sampler.setupData(testDebateIndices,
+                        debateVoteData.getWords(),
+                        debateVoteData.getAuthors(),
+                        null,
+                        testAuthorIndices,
+                        testBillIndices,
+                        testVotes);
+                predictions = sampler.test(null, null,
+                        new File(samplerFolder, TEST_PREFIX + AssignmentFile));
+                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
+                        debateVoteData.getAuthorVocab(),
+                        testAuthorIndices,
+                        testVotes,
+                        sampler.getPredictedUs(),
+                        debateVoteData.getAuthorTable());
+            }
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                    votes, predictions);
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+        }
+
+        if (cmd.hasOption("visualize")) {
+            sampler.setupData(trainDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
-                    testAuthorIndices,
-                    testVotes,
-                    null, null, null,
-                    new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
+                    votes,
+                    trainAuthorIndices,
+                    trainBillIndices,
+                    trainVotes);
+            sampler.inputFinalState();
+            File htmlFile = new File(samplerFolder, sampler.getBasename()
+                    + "-" + congressNum + ".html");
+            sampler.outputHTML(htmlFile,
+                    trainDebateIndices,
+                    debateVoteData.getDocIds(),
+                    debateVoteData.getRawSentences(),
+                    debateVoteData.getAuthorTable(),
+                    GovtrackUrl + congressNum + "/cr/");
+            sampler.outputAuthorNodeMatrix(new File(samplerFolder, "author-node-matrix.txt"),
+                    debateVoteData.getAuthorTable(), congressNum);
+            sampler.analyzeAuthors(new File(samplerFolder, "analysis.author"),
+                    debateVoteData.getAuthorTable());
+            sampler.outputAuthorIssueDistribution(new File(samplerFolder, "author-issues-distrs.txt"),
+                    debateVoteData.getAuthorTable(),
+                    billData.getTopicVocab());
 
-            String predFile = PREDICTION_FILE;
-            String resultFile = RESULT_FILE;
-            AbstractVotePredictor.outputPredictions(new File(teResultFolder, predFile),
-                    votes, predictions);
-            AbstractModel.outputPerformances(new File(teResultFolder, resultFile),
-                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+            File htmlFolder = new File(samplerFolder, sampler.getBasename()
+                    + "-" + congressNum + "-authors");
+            IOUtils.createFolder(htmlFolder);
+            sampler.outputAuthorHTMLs(htmlFolder,
+                    trainDebateIndices,
+                    debateVoteData.getDocIds(),
+                    debateVoteData.getRawSentences(),
+                    debateVoteData.getAuthorTable(),
+                    GovtrackUrl + congressNum + "/cr/");
         }
     }
 
     protected void runSNHDPIdealPoint(File outputFolder) {
         // estimate seeded issues
-        double[][] issuePhis = estimateIssues();
+        double[][] issuePhis;
+        if (cmd.hasOption("K")) {
+            int V = debateVoteData.getWordVocab().size();
+            int K = Integer.parseInt(cmd.getOptionValue("K"));
+            issuePhis = new double[K][V];
+            for (int kk = 0; kk < K; kk++) {
+                Arrays.fill(issuePhis[kk], 1.0 / V);
+            }
+        } else {
+            issuePhis = estimateIssues();
+        }
         double[] localAlphas = CLIUtils.getDoubleArrayArgument(cmd, "local-alphas",
                 new double[]{0.1, 0.1}, ",");
         double[] globalAlphas = CLIUtils.getDoubleArrayArgument(cmd, "global-alphas",
@@ -1605,7 +2100,9 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         sampler.setReport(true);
         sampler.setWordVocab(debateVoteData.getWordVocab());
         sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
-        sampler.setLabelVocab(billData.getTopicVocab());
+        if (!cmd.hasOption("K")) {
+            sampler.setLabelVocab(billData.getTopicVocab());
+        }
 
         PathAssumption pathAssumption = PathAssumption.MAXIMAL;
         String path = CLIUtils.getStringArgument(cmd, "path", "max");
@@ -1629,9 +2126,11 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 burn_in, max_iters, sample_lag, report_interval);
         File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
         IOUtils.createFolder(samplerFolder);
+        File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+        File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
 
         if (cmd.hasOption("train")) {
-            sampler.train(trainDebateIndices,
+            sampler.setupData(trainDebateIndices,
                     debateVoteData.getWords(),
                     debateVoteData.getAuthors(),
                     votes, trainAuthorIndices, trainBillIndices,
@@ -1652,6 +2151,14 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testvote")) {
+            IOUtils.createFolder(teResultFolder);
+            sampler.setupData(testDebateIndices,
+                    debateVoteData.getWords(),
+                    debateVoteData.getAuthors(),
+                    null,
+                    testAuthorIndices,
+                    testBillIndices,
+                    testVotes);
             SparseVector[] predictions = null;
             int count = 0;
             File reportFolder = new File(sampler.getReportFolderPath());
@@ -1661,7 +2168,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     continue;
                 }
                 sampler.inputState(new File(reportFolder, file));
-                SparseVector[] partPreds = sampler.test(testVotes);
+                SparseVector[] partPreds = sampler.predictInMatrix();
                 if (predictions == null) {
                     predictions = partPreds;
                 } else {
@@ -1674,8 +2181,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             for (SparseVector prediction : predictions) {
                 prediction.scale(1.0 / count);
             }
-            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
-            IOUtils.createFolder(teResultFolder);
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
@@ -1683,9 +2188,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
 
         if (cmd.hasOption("testauthor")) {
-            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
-
             SparseVector[] predictions;
             if (cmd.hasOption("parallel")) {
                 File iterPredFolderPath = new File(samplerFolder,
@@ -1697,44 +2200,16 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         testVotes,
                         iterPredFolderPath,
                         sampler);
-
-                // average author scores
-                String[] filenames = iterPredFolderPath.list();
-                double[] authorScores = null;
-                int count = 0;
-                for (String filename : filenames) {
-                    if (!filename.contains(AbstractVotePredictor.AuthorScoreFile)) {
-                        continue;
-                    }
-                    double[] partAuthorScores = AbstractVotePredictor.inputAuthorScores(
-                            new File(iterPredFolderPath, filename));
-                    if (authorScores == null) {
-                        authorScores = partAuthorScores;
-                    } else {
-                        for (int aa = 0; aa < authorScores.length; aa++) {
-                            authorScores[aa] += partAuthorScores[aa];
-                        }
-                    }
-                    count++;
-                }
-                for (int aa = 0; aa < authorScores.length; aa++) {
-                    authorScores[aa] /= count;
-                }
-                outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
-                        debateVoteData.getAuthorVocab(),
-                        testAuthorIndices,
-                        testVotes,
-                        authorScores,
-                        debateVoteData.getAuthorTable());
-
             } else {
-                predictions = sampler.test(null,
-                        testDebateIndices,
+                sampler.setupData(testDebateIndices,
                         debateVoteData.getWords(),
                         debateVoteData.getAuthors(),
+                        null,
                         testAuthorIndices,
-                        testVotes,
-                        null, null, null);
+                        testBillIndices,
+                        testVotes);
+                predictions = sampler.test(null, null,
+                        new File(samplerFolder, TEST_PREFIX + AssignmentFile));
                 outputAuthorScore(new File(teResultFolder, AuthorScoreFile),
                         debateVoteData.getAuthorVocab(),
                         testAuthorIndices,
@@ -1742,14 +2217,241 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         sampler.getPredictedUs(),
                         debateVoteData.getAuthorTable());
             }
-
-            String predFile = PREDICTION_FILE;
-            String resultFile = RESULT_FILE;
-            AbstractVotePredictor.outputPredictions(new File(teResultFolder, predFile),
+            AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
                     votes, predictions);
-            AbstractModel.outputPerformances(new File(teResultFolder, resultFile),
+            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
                     AbstractVotePredictor.evaluate(votes, testVotes, predictions));
         }
+    }
+
+    protected void runSNLDAMultIdealPoint(File outputFolder) {
+//        double[][] issuePhis = estimateIssues();
+//        int J = CLIUtils.getIntegerArgument(cmd, "J", 3);
+//        double[] alphas = CLIUtils.getDoubleArrayArgument(cmd, "alphas",
+//                new double[]{0.1, 0.1}, ",");
+//        double[] betas = CLIUtils.getDoubleArrayArgument(cmd, "betas",
+//                new double[]{10, 10, 0.1}, ",");
+//        double[] gamma_means = CLIUtils.getDoubleArrayArgument(cmd, "gamma-means",
+//                new double[]{0.2, 0.2}, ",");
+//        double[] gamma_scales = CLIUtils.getDoubleArrayArgument(cmd, "gamma-scales",
+//                new double[]{10, 1}, ",");
+//        double mu = CLIUtils.getDoubleArgument(cmd, "mu", 0.0);
+//        double[] sigmas = CLIUtils.getDoubleArrayArgument(cmd, "sigmas",
+//                new double[]{0.0, 1.0, 2.5}, ",");
+//        double l1 = CLIUtils.getDoubleArgument(cmd, "l1", 0.0);
+//        double l2 = CLIUtils.getDoubleArgument(cmd, "l2", 1.0);
+//        double lexl1 = CLIUtils.getDoubleArgument(cmd, "lexl1", 0.0);
+//        double lexl2 = CLIUtils.getDoubleArgument(cmd, "lexl2", 0.0);
+//        boolean hasRootTopic = cmd.hasOption("roottopic");
+//
+//        SNLDAMultIdealPoint sampler = new SNLDAMultIdealPoint();
+//        sampler.setVerbose(verbose);
+//        sampler.setDebug(debug);
+//        sampler.setLog(true);
+//        sampler.setReport(true);
+//        sampler.setWordVocab(debateVoteData.getWordVocab());
+//        sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+//        sampler.setLabelVocab(billData.getTopicVocab());
+//
+//        PathAssumption pathAssumption = PathAssumption.MAXIMAL;
+//        String path = CLIUtils.getStringArgument(cmd, "path", "max");
+//        switch (path) {
+//            case "max":
+//                pathAssumption = PathAssumption.MAXIMAL;
+//                break;
+//            case "min":
+//                pathAssumption = PathAssumption.MINIMAL;
+//                break;
+//            default:
+//                throw new RuntimeException("Path assumption " + path + " not supported");
+//        }
+//
+//        sampler.configure(outputFolder.getAbsolutePath(),
+//                debateVoteData.getWordVocab().size(), J,
+//                issuePhis, alphas, betas, gamma_means, gamma_scales,
+//                mu, sigmas, l1, l2, lexl1, lexl2, hasRootTopic,
+//                initState, pathAssumption, paramOpt,
+//                burn_in, max_iters, sample_lag, report_interval);
+//        File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
+//        IOUtils.createFolder(samplerFolder);
+//
+//        if (cmd.hasOption("train")) {
+//            sampler.setupData(trainDebateIndices,
+//                    debateVoteData.getWords(),
+//                    debateVoteData.getAuthors(),
+//                    votes, trainAuthorIndices, trainBillIndices,
+//                    trainVotes);
+//            sampler.initialize();
+//            sampler.iterate();
+//            sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile), numTopWords);
+//        }
+//
+//        if (cmd.hasOption("testauthor")) {
+//            File teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
+//            IOUtils.createFolder(teResultFolder);
+//
+//            SparseVector[] predictions = sampler.test(null,
+//                    testDebateIndices,
+//                    debateVoteData.getWords(),
+//                    debateVoteData.getAuthors(),
+//                    testAuthorIndices,
+//                    testVotes,
+//                    null, null, null,
+//                    new File(samplerFolder, TEST_PREFIX + "assignments.zip"));
+//
+//            String predFile = PREDICTION_FILE;
+//            String resultFile = RESULT_FILE;
+//            AbstractVotePredictor.outputPredictions(new File(teResultFolder, predFile),
+//                    votes, predictions);
+//            AbstractModel.outputPerformances(new File(teResultFolder, resultFile),
+//                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+//        }
+    }
+
+    protected void combineModel(File outputFolder) {
+        ArrayList<String> modelNames = new ArrayList<>();
+        modelNames.add("logreg-OWLQN-TFIDF_l1-0_l2-2.5");
+        modelNames.add("RANDOM_SNLDA-ideal-point_B-1000_M-2000_L-100_K-25_J-4_"
+                + "a-0.1-0.1_b-1-0.5-0.1_gm-0.2-0.2_gs-100-10_r-1_m-0_s-2.5_opt-false_rt-false_MAXIMAL");
+
+        ArrayList<Double> modelWeights = new ArrayList<>();
+        modelWeights.add(1.0);
+        modelWeights.add(1.0);
+
+        String combinedModel = "logreg-TFIDF-SNLDA-K25-J4";
+        combinePredictions(outputFolder, modelNames, modelWeights, combinedModel);
+    }
+
+    protected void combineModelAuthorDependent(File outputFolder) {
+        double alpha = 0.005;
+        double mu = 1000;
+        ArrayList<String> modelNames = new ArrayList<>();
+        modelNames.add("logreg-OWLQN-TFIDF_l1-0_l2-2.5");
+        modelNames.add("RANDOM_SNLDA-ideal-point_B-1000_M-2000_L-100_K-25_J-4_"
+                + "a-0.1-0.1_b-1-0.5-0.1_gm-0.2-0.2_gs-100-10_r-1_m-0_s-2.5_opt-false_rt-false_MAXIMAL");
+
+        SparseCount authorTokenCounts = new SparseCount();
+        for (int dd : testDebateIndices) {
+            int author = debateVoteData.getAuthors()[dd];
+            authorTokenCounts.changeCount(author, debateVoteData.getWords()[dd].length);
+        }
+        HashMap<Integer, ArrayList<Double>> modelWeightPerAuthors = new HashMap<>();
+        for (int author : authorTokenCounts.getIndices()) {
+            int tokenCount = authorTokenCounts.getCount(author);
+            double val = sigmoid(tokenCount, alpha, mu);
+            ArrayList<Double> modelWeights = new ArrayList<>();
+            modelWeights.add(val); // logistic regression
+            modelWeights.add(1.0 - val);
+            modelWeightPerAuthors.put(author, modelWeights);
+        }
+
+        String combinedModel = "logreg-TFIDF-SNLDA-K25-J4-author-specific";
+        combinePredictions(outputFolder, modelNames, modelWeightPerAuthors, combinedModel);
+    }
+
+    private double sigmoid(int count, double alpha, double mu) {
+        return 1.0 / (1.0 + Math.exp(-alpha * (count - mu)));
+    }
+
+    protected void combinePredictions(File outputFolder,
+            ArrayList<String> modelNames,
+            HashMap<Integer, ArrayList<Double>> modelWeightsPerAuthor,
+            String combinedModelName) {
+        ArrayList<SparseVector[]> predictionList = new ArrayList<>();
+        for (String modelName : modelNames) {
+            File teResultFolder = new File(new File(outputFolder, modelName), TEST_PREFIX + RESULT_FOLDER);
+            File tePredictionFile = new File(teResultFolder, PREDICTION_FILE);
+            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(tePredictionFile);
+            if (verbose) {
+                logln("--- Loading prediction from " + tePredictionFile);
+            }
+            predictionList.add(predictions);
+        }
+
+        if (testBillIndices == null) {
+            testBillIndices = new ArrayList<>();
+            for (int bb = 0; bb < testVotes[0].length; bb++) {
+                testBillIndices.add(bb);
+            }
+        }
+        int A = testAuthorIndices.size();
+        int B = testBillIndices.size();
+
+        SparseVector[] predictions = new SparseVector[testVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = testAuthorIndices.get(aa);
+            ArrayList<Double> modelWeights = modelWeightsPerAuthor.get(author);
+            double totalWeight = StatUtils.sum(modelWeights);
+            predictions[author] = new SparseVector(testVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = testBillIndices.get(bb);
+                if (testVotes[author][bill]) {
+                    double val = 0.0;
+                    for (int ii = 0; ii < predictionList.size(); ii++) {
+                        val += predictionList.get(ii)[author].get(bill) * modelWeights.get(ii);
+                    }
+                    predictions[author].set(bill, val / totalWeight);
+                }
+            }
+        }
+
+        File teResultFolder = new File(new File(outputFolder, combinedModelName),
+                TEST_PREFIX + RESULT_FOLDER);
+        IOUtils.createFolder(teResultFolder);
+        AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                votes, predictions);
+        AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+    }
+
+    protected void combinePredictions(File outputFolder,
+            ArrayList<String> modelNames,
+            ArrayList<Double> modelWeights,
+            String combinedModelName) {
+        ArrayList<SparseVector[]> predictionList = new ArrayList<>();
+        for (String modelName : modelNames) {
+            File teResultFolder = new File(new File(outputFolder, modelName), TEST_PREFIX + RESULT_FOLDER);
+            File tePredictionFile = new File(teResultFolder, PREDICTION_FILE);
+            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(tePredictionFile);
+            if (verbose) {
+                logln("--- Loading prediction from " + tePredictionFile);
+            }
+            predictionList.add(predictions);
+        }
+
+        if (testBillIndices == null) {
+            testBillIndices = new ArrayList<>();
+            for (int bb = 0; bb < testVotes[0].length; bb++) {
+                testBillIndices.add(bb);
+            }
+        }
+        int A = testAuthorIndices.size();
+        int B = testBillIndices.size();
+
+        double totalWeight = StatUtils.sum(modelWeights);
+        SparseVector[] predictions = new SparseVector[testVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = testAuthorIndices.get(aa);
+            predictions[author] = new SparseVector(testVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = testBillIndices.get(bb);
+                if (testVotes[author][bill]) {
+                    double val = 0.0;
+                    for (int ii = 0; ii < predictionList.size(); ii++) {
+                        val += predictionList.get(ii)[author].get(bill) * modelWeights.get(ii);
+                    }
+                    predictions[author].set(bill, val / totalWeight);
+                }
+            }
+        }
+
+        File teResultFolder = new File(new File(outputFolder, combinedModelName),
+                TEST_PREFIX + RESULT_FOLDER);
+        IOUtils.createFolder(teResultFolder);
+        AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
+                votes, predictions);
+        AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
+                AbstractVotePredictor.evaluate(votes, testVotes, predictions));
     }
 
     /**
@@ -1940,19 +2642,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     }
                 }
                 String aid = authorVocab.get(aa);
-//                writer.write(aa + "\t" + aid
-//                        + "\t" + authorScores[ii]
-//                        + "\t" + withCount
-//                        + "\t" + againstCount);
-//                if (authorTable != null) {
-//                    Author author = authorTable.get(aid);
-//                    writer.write("\t" + author.getProperty(GTLegislator.FW_ID)
-//                            + "\t" + author.getProperty(GTLegislator.NAME)
-//                            + "\t" + author.getProperty(GTLegislator.PARTY)
-//                            + "\t" + author.getProperty(GTLegislator.NOMINATE_SCORE1)
-//                    );
-//                }
-
                 Author author = authorTable.get(aid);
                 writer.write(author.getProperty(GTLegislator.NAME)
                         + " (" + MiscUtils.formatDouble(authorScores[ii])
@@ -2051,12 +2740,45 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
     }
 
+    protected void analyzeErrorMultipleModels(File foldFolder) {
+        if (verbose) {
+            logln("Analyzing error from multiple models in " + formatFolder);
+        }
+        ArrayList<String> modelNames = new ArrayList<>();
+        modelNames.add("logreg-OWLQN-TFIDF_l1-0_l2-2.5");
+        modelNames.add("RANDOM_SNLDA-ideal-point_B-1000_M-2000_L-100_K-25_J-4_"
+                + "a-0.1-0.1_b-1-0.5-0.1_gm-0.2-0.2_gs-100-10_r-1_m-0_s-2.5_opt-false_rt-false_MAXIMAL");
+
+        ArrayList<SparseVector[]> predictionList = new ArrayList<>();
+        for (String modelName : modelNames) {
+            File teResultFolder = new File(new File(foldFolder, modelName), TEST_PREFIX + RESULT_FOLDER);
+            File tePredictionFile = new File(teResultFolder, PREDICTION_FILE);
+            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(tePredictionFile);
+            if (verbose) {
+                logln("--- Loading prediction from " + tePredictionFile);
+            }
+            predictionList.add(predictions);
+        }
+        errorAnalysis(new File(foldFolder, AuthorErrorFile),
+                testDebateIndices,
+                debateVoteData.getWords(),
+                debateVoteData.getAuthors(),
+                testAuthorIndices,
+                testBillIndices,
+                testVotes,
+                modelNames,
+                predictionList);
+    }
+
     protected void analyzeError(File modelFolder) {
         File trResultFolder = new File(modelFolder, TRAIN_PREFIX + RESULT_FOLDER);
         File trPredictionFile = new File(trResultFolder, PREDICTION_FILE);
         if (trPredictionFile.exists()) {
-            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(
-                    trPredictionFile);
+            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(trPredictionFile);
+            ArrayList<String> modelNames = new ArrayList<>();
+            modelNames.add(modelFolder.getName());
+            ArrayList<SparseVector[]> predictionList = new ArrayList<>();
+            predictionList.add(predictions);
             errorAnalysis(new File(trResultFolder, AuthorErrorFile),
                     trainDebateIndices,
                     debateVoteData.getWords(),
@@ -2064,14 +2786,18 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     trainAuthorIndices,
                     trainBillIndices,
                     trainVotes,
-                    predictions);
+                    modelNames,
+                    predictionList);
         }
 
         File teResultFolder = new File(modelFolder, TEST_PREFIX + RESULT_FOLDER);
         File tePredictionFile = new File(teResultFolder, PREDICTION_FILE);
         if (tePredictionFile.exists()) {
-            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(
-                    new File(teResultFolder, PREDICTION_FILE));
+            SparseVector[] predictions = AbstractVotePredictor.inputPredictions(tePredictionFile);
+            ArrayList<String> modelNames = new ArrayList<>();
+            modelNames.add(modelFolder.getName());
+            ArrayList<SparseVector[]> predictionList = new ArrayList<>();
+            predictionList.add(predictions);
             errorAnalysis(new File(teResultFolder, AuthorErrorFile),
                     testDebateIndices,
                     debateVoteData.getWords(),
@@ -2079,7 +2805,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     testAuthorIndices,
                     testBillIndices,
                     testVotes,
-                    predictions);
+                    modelNames,
+                    predictionList);
         }
     }
 
@@ -2090,7 +2817,8 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             ArrayList<Integer> authorIndices,
             ArrayList<Integer> billIndices,
             boolean[][] validVotes,
-            SparseVector[] predictions) {
+            ArrayList<String> modelNames,
+            ArrayList<SparseVector[]> predictionList) {
         if (verbose) {
             logln("Analyzing errors " + outputFile);
         }
@@ -2111,27 +2839,38 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
         try {
             BufferedWriter writer = IOUtils.getBufferedWriter(outputFile);
+            writer.write("index"
+                    + "\tauthor-index"
+                    + "\tauthor-id"
+                    + "\tfreedomworks-id"
+                    + "\tname"
+                    + "\tnum-with"
+                    + "\tnum-against"
+                    + "\tnum-total"
+                    + "\tnum-debates"
+                    + "\tnum-tokens"
+                    + "\tparty"
+                    + "\tnominate-score");
+            for (String modelName : modelNames) {
+                writer.write("\t" + modelName);
+            }
+            writer.write("\n");
+
             for (int aa = 0; aa < authorIndices.size(); aa++) {
                 int author = authorIndices.get(aa);
                 String authorId = debateVoteData.getAuthorVocab().get(author);
 
-                int numCorrect = 0;
                 int numTotal = 0;
                 int numWith = 0;
+                int numAgainst = 0;
                 for (int bb = 0; bb < billIndices.size(); bb++) {
                     int bill = billIndices.get(bb);
                     if (validVotes[author][bill]) {
-                        if (!predictions[author].containsIndex(bill)) {
-                            throw new RuntimeException("Empty prediction");
-                        }
-
-                        if (isCorrectlyPredicted(votes[author][bill], predictions[author].get(bill))) {
-                            numCorrect++;
-                        }
                         if (votes[author][bill] == Vote.WITH) {
                             numWith++;
+                        } else if (votes[author][bill] == Vote.AGAINST) {
+                            numAgainst++;
                         }
-
                         numTotal++;
                     }
                 }
@@ -2140,15 +2879,31 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                         + "\t" + authorId
                         + "\t" + debateVoteData.getAuthorProperty(authorId, GTLegislator.FW_ID)
                         + "\t" + debateVoteData.getAuthorProperty(authorId, GTLegislator.NAME)
-                        + "\t" + numCorrect
-                        + "\t" + numTotal
                         + "\t" + numWith
-                        + "\t" + ((double) numCorrect / numTotal)
+                        + "\t" + numAgainst
+                        + "\t" + numTotal
                         + "\t" + debateCounts.getCount(author)
                         + "\t" + tokenCounts.getCount(author)
                         + "\t" + debateVoteData.getAuthorProperty(authorId, GTLegislator.PARTY)
-                        + "\t" + debateVoteData.getAuthorProperty(authorId, GTLegislator.NOMINATE_SCORE1)
-                        + "\n");
+                        + "\t" + debateVoteData.getAuthorProperty(authorId, GTLegislator.NOMINATE_SCORE1));
+                for (int ii = 0; ii < modelNames.size(); ii++) {
+                    SparseVector[] predictions = predictionList.get(ii);
+                    int numCorrect = 0;
+                    for (int bb = 0; bb < billIndices.size(); bb++) {
+                        int bill = billIndices.get(bb);
+                        if (validVotes[author][bill]) {
+                            if (!predictions[author].containsIndex(bill)) {
+                                throw new RuntimeException("Empty prediction");
+                            }
+
+                            if (isCorrectlyPredicted(votes[author][bill], predictions[author].get(bill))) {
+                                numCorrect++;
+                            }
+                        }
+                    }
+                    writer.write("\t" + numCorrect);
+                }
+                writer.write("\n");
             }
             writer.close();
         } catch (IOException e) {
@@ -2247,6 +3002,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         addOption("lexl2", "Lexical L2");
         addOption("etal2", "eta's L2");
         options.addOption("mh", false, "mh");
+        options.addOption("tfidf", false, "tfidf");
 
         options.addOption("roottopic", false, "roottopic");
         options.addOption("mh", false, "Metropolis-Hastings");
@@ -2261,13 +3017,17 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         options.addOption("display", false, "display");
         options.addOption("visualize", false, "visualize");
         options.addOption("hack", false, "hack");
+        options.addOption("analyze", false, "Analyze");
         options.addOption("analyzeerror", false, "Analyze prediction error");
+        options.addOption("testeval", false, "Evaluate test predictions");
 
         // logistic regression features
         options.addOption("sldamult", false, "SLDA-Mult features");
         options.addOption("snlda", false, "SNLDA features");
         options.addOption("slda", false, "SLDA features");
         options.addOption("party", false, "Party features");
+        options.addOption("lip", false, "Lexical Ideal Point");
+        options.addOption("lexicalsnlda", false, "Party features");
 
         addOption("branch-factors", "Initial branching factors at each level. "
                 + "The length of this array should be equal to L-1 (where L "

@@ -124,8 +124,8 @@ public class LogisticRegression extends AbstractVotePredictor {
             configName += "_m-" + MiscUtils.formatDouble(mu)
                     + "_s-" + MiscUtils.formatDouble(sigma);
         } else if (this.optType == OptType.OWLQN) {
-            configName += "_l1-" + MiscUtils.formatDouble(l1)
-                    + "_l2-" + MiscUtils.formatDouble(l2);
+            configName += "_l1-" + MiscUtils.formatDouble(l1, 10)
+                    + "_l2-" + MiscUtils.formatDouble(l2, 10);
         } else if (this.optType == OptType.LIBLINEAR) {
             configName += "_c-" + MiscUtils.formatDouble(c)
                     + "_e-" + MiscUtils.formatDouble(epsilon);
@@ -247,10 +247,9 @@ public class LogisticRegression extends AbstractVotePredictor {
                 }
             }
         }
-        if (normType != NormalizeType.TFIDF) {
-            for (SparseVector authorVec : this.authorVectors) { // normalize raw counts
-                authorVec.normalize();
-            }
+
+        for (SparseVector authorVec : this.authorVectors) {
+            authorVec.normalize();
         }
 
         // additional features
@@ -470,10 +469,8 @@ public class LogisticRegression extends AbstractVotePredictor {
             }
         }
 
-        if (normType != NormalizeType.TFIDF) {
-            for (SparseVector testAuthorVec : testAuthorVecs) {
-                testAuthorVec.normalize();
-            }
+        for (SparseVector testAuthorVec : testAuthorVecs) {
+            testAuthorVec.normalize();
         }
 
         // additional features
@@ -531,7 +528,8 @@ public class LogisticRegression extends AbstractVotePredictor {
                 for (int bb = 0; bb < testVotes[author].length; bb++) {
                     if (testVotes[author][bb]) {
                         double val = Math.exp(testAuthorVecs[aa].dotProduct(weights.get(bb)));
-                        predictions[author].set(bb, val / (1.0 + val));
+                        double prob = val / (val + 1.0);
+                        predictions[author].set(bb, prob);
                     }
                 }
             }

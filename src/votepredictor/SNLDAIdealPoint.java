@@ -1,5 +1,6 @@
 package votepredictor;
 
+import votepredictor.textidealpoint.AbstractTextIdealPoint;
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import data.Author;
 import data.Vote;
@@ -26,13 +27,14 @@ import util.RankingItem;
 import util.SamplerUtils;
 import util.SparseVector;
 import util.StatUtils;
+import util.evaluation.Measurement;
 import util.govtrack.GTLegislator;
 
 /**
  *
  * @author vietan
  */
-public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
+public class SNLDAIdealPoint extends AbstractTextIdealPoint {
 
     protected double[] alphas;          // [L-1]
     protected double[] betas;           // [L]
@@ -92,7 +94,6 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 sampler.mu,
                 sampler.sigma,
                 sampler.hasRootTopic,
-                sampler.wordWeightType,
                 sampler.initState,
                 sampler.pathAssumption,
                 sampler.paramOptimized,
@@ -113,7 +114,6 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             double mu, // mean of Gaussian for regression parameters
             double sigma, // stadard deviation of Gaussian for regression parameters
             boolean hasRootTopic,
-            WordWeightType wwt,
             InitialState initState,
             PathAssumption pathAssumption,
             boolean paramOpt,
@@ -136,9 +136,15 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         this.mu = mu;
         this.sigma = sigma;
         this.hasRootTopic = hasRootTopic;
-        this.wordWeightType = wwt;
+        this.wordWeightType = WordWeightType.NONE;
 
         this.hyperparams = new ArrayList<Double>();
+        for (double alpha : alphas) {
+            this.hyperparams.add(alpha);
+        }
+        for (double beta : betas) {
+            this.hyperparams.add(beta);
+        }
         this.sampledParams = new ArrayList<ArrayList<Double>>();
         this.sampledParams.add(cloneHyperparameters());
 
@@ -177,15 +183,15 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             logln("--- word weight type:\t" + this.wordWeightType);
         }
 
-        if (this.alphas.length != L - 1) {
+        if (alphas.length != L - 1) {
             throw new RuntimeException("Local alphas: "
-                    + MiscUtils.arrayToString(this.alphas)
+                    + MiscUtils.arrayToString(alphas)
                     + ". Length should be " + (L - 1));
         }
 
-        if (this.betas.length != L) {
+        if (betas.length != L) {
             throw new RuntimeException("Betas: "
-                    + MiscUtils.arrayToString(this.betas)
+                    + MiscUtils.arrayToString(betas)
                     + ". Length should be " + (L));
         }
 
@@ -231,7 +237,6 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 .append("_m-").append(formatter.format(mu))
                 .append("_s-").append(formatter.format(sigma));
         str.append("_opt-").append(this.paramOptimized);
-        str.append("_wwt-").append(this.wordWeightType);
         str.append("_rt-").append(this.hasRootTopic);
         str.append("_").append(pathAssumption);
         this.name = str.toString();
@@ -250,15 +255,27 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
     }
 
     protected double getAlpha(int l) {
-        return this.alphas[l];
+        return this.hyperparams.get(l);
     }
 
     protected double getBeta(int l) {
-        return this.betas[l];
+        return this.hyperparams.get(L - 1 + l);
+    }
+
+    protected double getAlpha(ArrayList<Double> params, int l) {
+        return params.get(l);
+    }
+
+    protected double getBeta(ArrayList<Double> params, int l) {
+        return params.get(L - 1 + l);
     }
 
     protected double getGammaMean(int l) {
         return this.gamma_means[l];
+    }
+
+    protected double[] getGammaMeanVector(int l) {
+        return new double[]{gamma_means[l], 1.0 - gamma_means[l]};
     }
 
     protected double getGammaScale(int l) {
@@ -274,6 +291,38 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         return this.getSamplerFolderPath()
                 + "\n" + printGlobalTreeSummary()
                 + "\nCurrent thread " + Thread.currentThread().getId();
+    }
+
+    /**
+     * Make prediction on held-out votes of known legislators and known bills,
+     * averaging over multiple models.
+     *
+     * @return Predictions
+     */
+    public SparseVector[] predictInMatrixMultiples() {
+        SparseVector[] predictions = null;
+        int count = 0;
+        File reportFolder = new File(this.getReportFolderPath());
+        String[] files = reportFolder.list();
+        for (String file : files) {
+            if (!file.endsWith(".zip")) {
+                continue;
+            }
+            this.inputState(new File(reportFolder, file));
+            SparseVector[] partPreds = this.predictInMatrix();
+            if (predictions == null) {
+                predictions = partPreds;
+            } else {
+                for (int aa = 0; aa < predictions.length; aa++) {
+                    predictions[aa].add(partPreds[aa]);
+                }
+            }
+            count++;
+        }
+        for (SparseVector prediction : predictions) {
+            prediction.scale(1.0 / count);
+        }
+        return predictions;
     }
 
     /**
@@ -482,7 +531,7 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         Ks[1] = J;
 
         rlda.configure(folder, V, Ks, rlda_alphas, rlda_betas,
-                initState, paramOptimized,
+                InitialState.RANDOM, false,
                 rlda_burnin, rlda_maxiter, rlda_samplelag, rlda_samplelag);
         try {
             File ldaZFile = new File(rlda.getSamplerFolderPath(), basename + ".zip");
@@ -526,10 +575,6 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             issueNode.initializeGlobalTheta();
             issueNode.initializeGlobalPi();
         }
-
-        x = new double[B];
-        y = new double[B];
-        u = new double[A];
     }
 
     protected void initializeDataStructure() {
@@ -537,7 +582,6 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         for (int d = 0; d < D; d++) {
             z[d] = new Node[words[d].length];
         }
-
         authorMeans = new double[A];
     }
 
@@ -642,26 +686,39 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 } else {
                     logln("--- Sampling. " + str);
                 }
-            }
-
-            long etaTime = updateEtas();
-            long uxyTime = updateUXY();
-            long topicTime = sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED);
-
-            if (isReporting) {
-                logln("\n" + printGlobalTree() + "\n");
-                logln("--- --- Time. Topic: " + topicTime
-                        + ". Eta: " + etaTime
-                        + ". UXY: " + uxyTime);
-                logln("--- --- # tokens: " + numTokens
-                        + ". # tokens changed: " + numTokensChanged
-                        + " (" + (double) numTokensChanged / numTokens + ")"
-                        + ". # tokens accepted: " + numTokensAccepted
-                        + " (" + (double) numTokensAccepted / numTokens + ")");
                 logln("--- --- positive anchor (" + posAnchor + "): "
                         + MiscUtils.formatDouble(u[posAnchor])
                         + ". negative anchor (" + negAnchor + "): "
                         + MiscUtils.formatDouble(u[negAnchor]));
+                logln("--- Evaluating ...");
+                SparseVector[] predictions = predictInMatrix();
+                ArrayList<Measurement> measurements = AbstractVotePredictor
+                        .evaluate(votes, validVotes, predictions);
+                for (Measurement m : measurements) {
+                    logln(">>> >>> " + m.getName() + ": " + m.getValue());
+                }
+            }
+
+            updateEtas();
+            updateUXY();
+            sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED);
+
+            // parameter optimization
+            if (iter % LAG == 0 && iter >= BURN_IN) {
+                if (paramOptimized) { // slice sampling
+                    sliceSample();
+                    ArrayList<Double> sparams = new ArrayList<Double>();
+                    for (double param : this.hyperparams) {
+                        sparams.add(param);
+                    }
+                    this.sampledParams.add(sparams);
+
+                    if (verbose) {
+                        for (double p : sparams) {
+                            System.out.println(p);
+                        }
+                    }
+                }
             }
 
             if (debug) {
@@ -703,8 +760,7 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             node.getContent().increment(words[dd][nn]);
         }
         if (addToData) {
-            authorMeans[authors[dd]] += node.eta * wordWeights[words[dd][nn]]
-                    / authorTotalWordWeights[authors[dd]];
+            authorMeans[authors[dd]] += node.eta / authorTotalWordWeights[authors[dd]];
             node.tokenCounts.increment(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -726,10 +782,7 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
     private void removeToken(int dd, int nn, Node node,
             boolean removeFromData, boolean removeFromModel) {
         if (removeFromData) {
-            if (authorMeans != null) {
-                authorMeans[authors[dd]] -= node.eta * wordWeights[words[dd][nn]]
-                        / authorTotalWordWeights[authors[dd]];
-            }
+            authorMeans[authors[dd]] -= node.eta / authorTotalWordWeights[authors[dd]];
             node.tokenCounts.decrement(dd);
             Node tempNode = node;
             while (tempNode != null) {
@@ -866,7 +919,9 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         double[] logprobs = getTransLogProbabilities(dd, nn, node, node);
         logprobs[ACTUAL_INDEX] = Math.log(node.getPhi(words[dd][nn]));
         if (observed) {
-            logprobs[ACTUAL_INDEX] += getResponseLogLikelihood(authors[dd], words[dd][nn], node);
+            int author = authors[dd];
+            double aMean = authorMeans[author] + node.eta / authorTotalWordWeights[author];
+            logprobs[ACTUAL_INDEX] += StatUtils.logNormalProbability(u[author], aMean, Math.sqrt(rho));
         }
         Node source = node.getParent();
         Node target = node;
@@ -947,21 +1002,6 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
     }
 
     /**
-     * Compute the log likelihood of an author's response variable given that a
-     * token from the author is assigned to a given node.
-     *
-     * @param author The author
-     * @param node The node
-     * @return
-     */
-    private double getResponseLogLikelihood(int author, int word, Node node) {
-        double aMean = authorMeans[author] + node.eta * wordWeights[word]
-                / authorTotalWordWeights[author];
-        double resLLh = StatUtils.logNormalProbability(u[author], aMean, Math.sqrt(rho));
-        return resLLh;
-    }
-
-    /**
      * Update regression parameters using L-BFGS.
      *
      * @return Elapsed time
@@ -981,12 +1021,13 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         for (int aa = 0; aa < A; aa++) {
             designMatrix[aa] = new SparseVector(N);
         }
-        for (int dd = 0; dd < D; dd++) {
-            int aa = authors[dd];
-            for (int nn = 0; nn < words[dd].length; nn++) {
-                int kk = nodeList.indexOf(z[dd][nn]);
-                designMatrix[aa].change(kk, wordWeights[words[dd][nn]]
-                        / authorTotalWordWeights[aa]);
+        for (int kk = 0; kk < N; kk++) {
+            Node node = nodeList.get(kk);
+            for (int dd : node.tokenCounts.getIndices()) {
+                int count = node.tokenCounts.getCount(dd);
+                int author = authors[dd];
+                double val = (double) count / authorTotalWordWeights[author];
+                designMatrix[author].change(kk, val);
             }
         }
 
@@ -1007,7 +1048,7 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             ex.printStackTrace();
         }
 
-        if (isReporting()) {
+        if (isReporting) {
             logln("--- converged? " + converged);
         }
 
@@ -1117,32 +1158,143 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         }
     }
 
-    private double getVoteLogLikelihood() {
+    @Override
+    public double getLogLikelihood() {
         double voteLlh = 0.0;
-        for (int ii = 0; ii < A; ii++) {
-            for (int jj = 0; jj < B; jj++) {
-                if (isValidVote(ii, jj)) {
-                    double score = u[ii] * x[jj] + y[jj];
-                    voteLlh += getVote(ii, jj) * score - Math.log(1 + Math.exp(score));
+        for (int aa = 0; aa < A; aa++) {
+            for (int bb = 0; bb < B; bb++) {
+                if (isValidVote(aa, bb)) {
+                    double score = u[aa] * x[bb] + y[bb];
+                    voteLlh += getVote(aa, bb) * score - Math.log(1 + Math.exp(score));
                 }
             }
         }
-        return voteLlh;
-    }
 
-    @Override
-    public double getLogLikelihood() {
-        return getVoteLogLikelihood();
+        double wordLlh = 0.0;
+        double horizontalLlh = 0.0;
+        double verticalLlh = 0.0;
+        Stack<Node> stack = new Stack<>();
+        stack.add(root);
+        while (!stack.isEmpty()) {
+            Node node = stack.pop();
+            int level = node.getLevel();
+            for (Node child : node.getChildren()) {
+                stack.add(child);
+            }
+            if (!node.isRoot()) {
+                wordLlh += node.getContent().getLogLikelihood();
+            }
+
+            if (!node.isLeaf()) {
+                // local
+                for (int dd : node.subtreeTokenCounts.getIndices()) {
+                    // horizontal
+                    SparseCount counts = new SparseCount();
+                    for (Node child : node.getChildren()) {
+                        counts.changeCount(child.getIndex(), child.subtreeTokenCounts.getCount(dd));
+                    }
+                    horizontalLlh += SamplerUtils.computeLogLhood(counts, node.theta);
+
+                    // vertical
+                    int[] vertCounts = new int[2];
+                    vertCounts[0] = node.tokenCounts.getCount(dd);
+                    vertCounts[1] = node.subtreeTokenCounts.getCount(dd) - vertCounts[0];
+                    verticalLlh += SamplerUtils.computeLogLhood(vertCounts,
+                            node.subtreeTokenCounts.getCount(dd),
+                            getGammaMeanVector(level), getGammaScale(level));
+                }
+
+                // global width
+                int[] counts = new int[node.getNumChildren()];
+                int countSum = 0;
+                for (int kk = 0; kk < node.getNumChildren(); kk++) {
+                    counts[kk] = node.getChild(kk).subtreeTokenCounts.getCountSum();
+                    countSum += counts[kk];
+                }
+                horizontalLlh += SamplerUtils.computeLogLhood(counts, countSum, getAlpha(level));
+            }
+        }
+
+        double llh = voteLlh + wordLlh + horizontalLlh + verticalLlh;
+        return llh;
     }
 
     @Override
     public double getLogLikelihood(ArrayList<Double> newParams) {
-        throw new RuntimeException("Currently not supported");
+        double voteLlh = 0.0;
+        for (int aa = 0; aa < A; aa++) {
+            for (int bb = 0; bb < B; bb++) {
+                if (isValidVote(aa, bb)) {
+                    double score = u[aa] * x[bb] + y[bb];
+                    voteLlh += getVote(aa, bb) * score - Math.log(1 + Math.exp(score));
+                }
+            }
+        }
+
+        double wordLlh = 0.0;
+        double horizontalLlh = 0.0;
+        double verticalLlh = 0.0;
+        Stack<Node> stack = new Stack<>();
+        stack.add(root);
+        while (!stack.isEmpty()) {
+            Node node = stack.pop();
+            int level = node.getLevel();
+            for (Node child : node.getChildren()) {
+                stack.add(child);
+            }
+            if (!node.isRoot()) {
+                DirMult nodeContent = node.getContent();
+                wordLlh += nodeContent.getLogLikelihood(getBeta(newParams, level) * V,
+                        nodeContent.getCenterVector());
+            }
+
+            if (!node.isLeaf()) {
+                // local
+                for (int dd : node.subtreeTokenCounts.getIndices()) {
+                    // horizontal
+                    SparseCount counts = new SparseCount();
+                    for (Node child : node.getChildren()) {
+                        counts.changeCount(child.getIndex(), child.subtreeTokenCounts.getCount(dd));
+                    }
+                    horizontalLlh += SamplerUtils.computeLogLhood(counts, node.theta);
+
+                    // vertical
+                    int[] vertCounts = new int[2];
+                    vertCounts[0] = node.tokenCounts.getCount(dd);
+                    vertCounts[1] = node.subtreeTokenCounts.getCount(dd) - vertCounts[0];
+                    verticalLlh += SamplerUtils.computeLogLhood(vertCounts,
+                            node.subtreeTokenCounts.getCount(dd),
+                            getGammaMeanVector(level), getGammaScale(level));
+                }
+
+                // global width
+                int[] counts = new int[node.getNumChildren()];
+                int countSum = 0;
+                for (int kk = 0; kk < node.getNumChildren(); kk++) {
+                    counts[kk] = node.getChild(kk).subtreeTokenCounts.getCountSum();
+                    countSum += counts[kk];
+                }
+                horizontalLlh += SamplerUtils.computeLogLhood(counts, countSum,
+                        getAlpha(newParams, level));
+            }
+        }
+
+        double llh = voteLlh + wordLlh + horizontalLlh + verticalLlh;
+        return llh;
     }
 
     @Override
     public void updateHyperparameters(ArrayList<Double> newParams) {
-        throw new RuntimeException("Currently not supported");
+        this.hyperparams = newParams;
+        Stack<Node> stack = new Stack<>();
+        while (!stack.isEmpty()) {
+            Node node = stack.pop();
+            int level = node.getLevel();
+            for (Node child : node.getChildren()) {
+                stack.add(child);
+            }
+            node.getContent().setConcentration(getBeta(level) * V);
+        }
     }
 
     @Override
@@ -1635,7 +1787,9 @@ public class SNLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                     .append("; ").append(MiscUtils.formatDouble(node.eta))
                     .append(")");
             if (node.getLevel() == 1) {
-                str.append(" ").append(labelVocab.get(node.getIndex()));
+                if (labelVocab != null && labelVocab.size() == K) {
+                    str.append(" ").append(labelVocab.get(node.getIndex()));
+                }
             }
             str.append("\n");
 

@@ -1,8 +1,8 @@
 package votepredictor;
 
+import votepredictor.textidealpoint.AbstractTextIdealPoint;
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import cc.mallet.optimize.Optimizable;
-import data.Vote;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import optimization.RidgeLinearRegressionLBFGS;
+import sampler.unsupervised.LDA;
 import sampling.likelihood.DirMult;
 import util.IOUtils;
 import util.MiscUtils;
@@ -25,7 +26,7 @@ import util.evaluation.Measurement;
  *
  * @author vietan
  */
-public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
+public class SLDAIdealPoint extends AbstractTextIdealPoint {
 
     public static final int ALPHA = 0;
     public static final int BETA = 1;
@@ -50,7 +51,6 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
     protected double[] authorMeans;
 
     // internal
-    protected int numTokensChanged;
     protected int posAnchor;
     protected int negAnchor;
 
@@ -73,7 +73,6 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 sampler.sigma,
                 sampler.rate_alpha,
                 sampler.rate_eta,
-                sampler.wordWeightType,
                 sampler.initState,
                 sampler.paramOptimized,
                 sampler.BURN_IN,
@@ -92,7 +91,6 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             double sigma, // stadard deviation of Gaussian for regression parameters
             double rate_alpha,
             double rate_eta,
-            WordWeightType wordWeghtType,
             InitialState initState,
             boolean paramOpt,
             int burnin, int maxiter, int samplelag, int repInt) {
@@ -112,7 +110,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         this.sigma = sigma;
         this.rate_alpha = rate_alpha;
         this.rate_eta = rate_eta;
-        this.wordWeightType = wordWeghtType;
+        this.wordWeightType = WordWeightType.NONE;
 
         this.sampledParams = new ArrayList<ArrayList<Double>>();
         this.sampledParams.add(cloneHyperparameters());
@@ -144,7 +142,6 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             logln("--- max iter:\t" + MAX_ITER);
             logln("--- sample lag:\t" + LAG);
             logln("--- paramopt:\t" + paramOptimized);
-            logln("--- word weight type:\t" + wordWeghtType);
             logln("--- initialize:\t" + initState);
         }
     }
@@ -165,7 +162,6 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 .append("_m-").append(formatter.format(mu))
                 .append("_s-").append(formatter.format(sigma));
         str.append("_opt-").append(this.paramOptimized);
-        str.append("_wwt-").append(this.wordWeightType);
         this.name = str.toString();
     }
 
@@ -185,12 +181,48 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         return this.authorMeans;
     }
 
+    public double getLearningRate() {
+        return 0.01;
+    }
+
     @Override
     public String getCurrentState() {
         StringBuilder str = new StringBuilder();
         str.append(this.getSamplerFolderPath())
                 .append("\nCurrent thread: ").append(Thread.currentThread().getId());
         return str.toString();
+    }
+
+    /**
+     * Make prediction on held-out votes of known legislators and known bills,
+     * averaging over multiple models.
+     *
+     * @return Predictions
+     */
+    public SparseVector[] predictInMatrixMultiples() {
+        SparseVector[] predictions = null;
+        int count = 0;
+        File reportFolder = new File(this.getReportFolderPath());
+        String[] files = reportFolder.list();
+        for (String file : files) {
+            if (!file.endsWith(".zip")) {
+                continue;
+            }
+            this.inputState(new File(reportFolder, file));
+            SparseVector[] partPreds = this.predictInMatrix();
+            if (predictions == null) {
+                predictions = partPreds;
+            } else {
+                for (int aa = 0; aa < predictions.length; aa++) {
+                    predictions[aa].add(partPreds[aa]);
+                }
+            }
+            count++;
+        }
+        for (SparseVector prediction : predictions) {
+            prediction.scale(1.0 / count);
+        }
+        return predictions;
     }
 
     /**
@@ -221,8 +253,29 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
      * @return Predicted probabilities
      */
     public SparseVector[] predictOutMatrix() {
-        this.u = this.authorMeans;
-        return predictInMatrix();
+        SparseVector[] predictions = new SparseVector[validVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(validVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = billIndices.get(bb);
+                if (isValidVote(aa, bb)) {
+                    double score = Math.exp(authorMeans[aa] * x[bb] + y[bb]);
+                    double prob = score / (1.0 + score);
+                    predictions[author].set(bill, prob);
+                }
+            }
+        }
+        return predictions;
+    }
+
+    protected double getMSE() {
+        double mse = 0.0;
+        for (int aa = 0; aa < A; aa++) {
+            double diff = authorMeans[aa] - u[aa];
+            mse += diff * diff;
+        }
+        return mse / A;
     }
 
     /**
@@ -254,13 +307,26 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         }
 
         // sample on test data
-        sampleNewDocuments(stateFile, assignmentFile);
+        ArrayList<SparseVector[]> predictionList = sampleNewDocuments(stateFile, assignmentFile);
 
         // make prediction on votes of unknown voters
-        SparseVector[] predictions = predictOutMatrix();
+        SparseVector[] predictions = averagePredictions(predictionList);
 
         if (predictionFile != null) { // output predictions
             AbstractVotePredictor.outputPredictions(predictionFile, null, predictions);
+        }
+        return predictions;
+    }
+
+    private SparseVector[] averagePredictions(ArrayList<SparseVector[]> predList) {
+        SparseVector[] predictions = new SparseVector[validVotes.length];
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(validVotes[author].length);
+            for (int ii = 0; ii < predList.size(); ii++) {
+                predictions[author].add(predList.get(ii)[author]);
+            }
+            predictions[author].scale(1.0 / predList.size());
         }
         return predictions;
     }
@@ -273,7 +339,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
      * @param testDocIndices
      * @param assignmentFile
      */
-    private void sampleNewDocuments(
+    private ArrayList<SparseVector[]> sampleNewDocuments(
             File stateFile,
             File assignmentFile) {
         if (verbose) {
@@ -284,6 +350,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         initializeDataStructure();
 
         // sample
+        ArrayList<SparseVector[]> predictionList = new ArrayList<>();
         for (iter = 0; iter < testMaxIter; iter++) {
             isReporting = verbose && iter % testRepInterval == 0;
             if (isReporting) {
@@ -296,19 +363,14 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             }
 
             // sample topic assignments
-            long topicTime;
             if (iter == 0) {
-                topicTime = sampleZs(!REMOVE, !ADD, !REMOVE, ADD, !OBSERVED);
+                sampleZs(!REMOVE, !ADD, !REMOVE, ADD, !OBSERVED);
             } else {
-                topicTime = sampleZs(!REMOVE, !ADD, REMOVE, ADD, !OBSERVED);
+                sampleZs(!REMOVE, !ADD, REMOVE, ADD, !OBSERVED);
             }
 
-            if (isReporting) {
-                logln("--- --- Time. Topic: " + topicTime);
-                logln("--- --- # tokens: " + numTokens
-                        + ". # token changed: " + numTokensChanged
-                        + ". change ratio: " + (double) numTokensChanged / numTokens
-                        + "\n\n");
+            if (iter >= testBurnIn && iter % testSampleLag == 0) {
+                predictionList.add(predictOutMatrix());
             }
         }
 
@@ -338,6 +400,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 throw new RuntimeException("Exception while outputing to " + assignmentFile);
             }
         }
+        return predictionList;
     }
 
     protected void outputDocTopics(File file) {
@@ -443,46 +506,70 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         if (verbose) {
             logln("--- Initializing random UXY using anchored legislators ...");
         }
-        double anchorMean = 3.0;
-        double anchorVar = 0.01;
-        ArrayList<RankingItem<Integer>> rankAuthors = new ArrayList<>();
-        for (int aa = 0; aa < A; aa++) {
-            int withCount = 0;
-            int againstCount = 0;
-            for (int bb = 0; bb < B; bb++) {
-                if (isValidVote(aa, bb)) {
-                    if (getVote(aa, bb) == Vote.WITH) {
-                        withCount++;
-                    } else if (getVote(aa, bb) == Vote.AGAINST) {
-                        againstCount++;
-                    }
-                }
-            }
-            double val = (double) withCount / (againstCount + withCount);
-            rankAuthors.add(new RankingItem<Integer>(aa, val));
-        }
-        Collections.sort(rankAuthors);
-        posAnchor = rankAuthors.get(0).getObject();
-        negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
+        BayesianIdealPoint bip = new BayesianIdealPoint();
+        bip.configure(1.0, 0.01, 5000, 0.0, sigma);
+        bip.setTrain(votes, authorIndices, billIndices, validVotes);
 
-        this.u = new double[A];
-        for (int ii = 0; ii < A; ii++) {
-            int aa = rankAuthors.get(ii).getObject();
-            if (ii < A / 4) {
-                this.u[aa] = SamplerUtils.getGaussian(anchorMean, anchorVar);
-            } else if (ii > 3 * A / 4) {
-                this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
-            } else {
-                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
-            }
-        }
+        File bipFolder = new File(folder, bip.getName());
+        File bipFile = new File(bipFolder, ModelFile);
 
-        this.x = new double[B];
-        this.y = new double[B];
-        for (int b = 0; b < B; b++) {
-            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
-            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
+        if (bipFile.exists()) {
+            if (verbose) {
+                logln("B.I.P. file exists. Loading from " + bipFile);
+            }
+            bip.input(bipFile);
+        } else {
+            if (verbose) {
+                logln("B.I.P. file not found. Running and outputing to " + bipFile);
+            }
+            IOUtils.createFolder(bipFolder);
+            bip.train();
+            bip.output(bipFile);
         }
+        this.u = bip.getUs();
+        this.x = bip.getXs();
+        this.y = bip.getYs();
+
+//        double anchorMean = 3.0;
+//        double anchorVar = 0.01;
+//        ArrayList<RankingItem<Integer>> rankAuthors = new ArrayList<>();
+//        for (int aa = 0; aa < A; aa++) {
+//            int withCount = 0;
+//            int againstCount = 0;
+//            for (int bb = 0; bb < B; bb++) {
+//                if (isValidVote(aa, bb)) {
+//                    if (getVote(aa, bb) == Vote.WITH) {
+//                        withCount++;
+//                    } else if (getVote(aa, bb) == Vote.AGAINST) {
+//                        againstCount++;
+//                    }
+//                }
+//            }
+//            double val = (double) withCount / (againstCount + withCount);
+//            rankAuthors.add(new RankingItem<Integer>(aa, val));
+//        }
+//        Collections.sort(rankAuthors);
+//        posAnchor = rankAuthors.get(0).getObject();
+//        negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
+//
+//        this.u = new double[A];
+//        for (int ii = 0; ii < A; ii++) {
+//            int aa = rankAuthors.get(ii).getObject();
+//            if (ii < A / 4) {
+//                this.u[aa] = SamplerUtils.getGaussian(anchorMean, anchorVar);
+//            } else if (ii > 3 * A / 4) {
+//                this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
+//            } else {
+//                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
+//            }
+//        }
+//
+//        this.x = new double[B];
+//        this.y = new double[B];
+//        for (int b = 0; b < B; b++) {
+//            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
+//            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
+//        }
     }
 
     protected void initializeAssignments() {
@@ -490,8 +577,11 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             case RANDOM:
                 initializeRandomAssignments();
                 break;
+            case PRESET:
+                initializePresetAssignments();
+                break;
             default:
-                throw new RuntimeException("Initialization not supported");
+                throw new RuntimeException("Initialization " + initState + " not supported");
         }
     }
 
@@ -501,6 +591,64 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         }
 
         sampleZs(!REMOVE, ADD, !REMOVE, ADD, !OBSERVED);
+    }
+
+    protected void initializePresetAssignments() {
+        if (verbose) {
+            logln("--- Initializing preset assignments. Running LDA ...");
+        }
+
+        // run LDA
+        int lda_burnin = 10;
+        int lda_maxiter = 100;
+        int lda_samplelag = 10;
+        LDA lda = new LDA();
+        lda.setDebug(debug);
+        lda.setVerbose(verbose);
+        lda.setLog(false);
+        double lda_alpha = hyperparams.get(ALPHA);
+        double lda_beta = hyperparams.get(BETA);
+
+        lda.configure(folder, V, K, lda_alpha, lda_beta, InitialState.RANDOM, false,
+                lda_burnin, lda_maxiter, lda_samplelag, lda_samplelag);
+
+        int[][] ldaZ = null;
+        try {
+            File ldaFile = new File(lda.getSamplerFolderPath(), basename + ".zip");
+            lda.train(words, null);
+            if (ldaFile.exists()) {
+                if (verbose) {
+                    logln("--- --- LDA file exists. Loading from " + ldaFile);
+                }
+                lda.inputState(ldaFile);
+            } else {
+                if (verbose) {
+                    logln("--- --- LDA not found. Running LDA ...");
+                }
+                lda.initialize();
+                lda.iterate();
+                IOUtils.createFolder(lda.getSamplerFolderPath());
+                lda.outputState(ldaFile);
+                lda.setWordVocab(wordVocab);
+                lda.outputTopicTopWords(new File(lda.getSamplerFolderPath(), TopWordFile), 20);
+            }
+            ldaZ = lda.getZs();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Exception while running LDA for initialization");
+        }
+        setLog(log);
+
+        // initialize assignments
+        for (int dd = 0; dd < D; dd++) {
+            int aa = authors[dd];
+            for (int nn = 0; nn < words[dd].length; nn++) {
+                z[dd][nn] = ldaZ[dd][nn];
+                docTopics[dd].increment(z[dd][nn]);
+                topicWords[z[dd][nn]].increment(words[dd][nn]);
+                authorMeans[aa] += eta[z[dd][nn]] / authorTotalWordWeights[aa];
+            }
+        }
     }
 
     @Override
@@ -550,16 +698,23 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 ArrayList<Measurement> measurements = AbstractVotePredictor
                         .evaluate(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
-                    logln(">>> >>> " + m.getName() + ": " + m.getValue());
+                    logln(">>> i >>> " + m.getName() + ": " + m.getValue());
                 }
+
+                predictions = predictOutMatrix();
+                measurements = AbstractVotePredictor
+                        .evaluate(votes, validVotes, predictions);
+                for (Measurement m : measurements) {
+                    logln(">>> o >>> " + m.getName() + ": " + m.getValue());
+                }
+                logln("--- MSE: " + getMSE());
             }
 
             // L-BFGS to update etas
             updateEtas();
 
             // gradient ascent to update Xs and Ys
-            updateUXY();
-
+//            updateUXY();
             // sample topic assignments
             sampleZs(REMOVE, ADD, REMOVE, ADD, OBSERVED);
 
@@ -634,8 +789,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 }
                 if (removeFromData) {
                     docTopics[d].decrement(z[d][n]);
-                    authorMeans[aa] -= eta[z[d][n]] * wordWeights[words[d][n]]
-                            / authorTotalWordWeights[aa];
+                    authorMeans[aa] -= eta[z[d][n]] / authorTotalWordWeights[aa];
                 }
 
                 double[] logprobs = new double[K];
@@ -644,8 +798,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                             = Math.log(docTopics[d].getCount(kk) + hyperparams.get(ALPHA))
                             + Math.log(topicWords[kk].getProbability(words[d][n]));
                     if (observe) {
-                        double aMean = authorMeans[aa]
-                                + eta[kk] * wordWeights[words[d][n]] / authorTotalWordWeights[aa];
+                        double aMean = authorMeans[aa] + eta[kk] / authorTotalWordWeights[aa];
                         double resLLh = StatUtils.logNormalProbability(u[aa], aMean, Math.sqrt(rho));
                         logprobs[kk] += resLLh;
                     }
@@ -673,8 +826,7 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
                 }
                 if (addToData) {
                     docTopics[d].increment(z[d][n]);
-                    authorMeans[aa] += eta[z[d][n]] * wordWeights[words[d][n]]
-                            / authorTotalWordWeights[aa];
+                    authorMeans[aa] += eta[z[d][n]] / authorTotalWordWeights[aa];
                 }
             }
         }
@@ -705,9 +857,9 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
         }
         for (int dd = 0; dd < D; dd++) {
             int aa = authors[dd];
-            for (int nn = 0; nn < words[dd].length; nn++) {
-                designMatrix[aa].change(z[dd][nn], wordWeights[words[dd][nn]]
-                        / authorTotalWordWeights[aa]);
+            for (int kk : docTopics[dd].getSparseCounts().getIndices()) {
+                int count = docTopics[dd].getCount(kk);
+                designMatrix[aa].change(kk, (double) count / authorTotalWordWeights[aa]);
             }
         }
 
@@ -803,10 +955,6 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             x[bb] += bRate * gradX;
             y[bb] += bRate * gradY;
         }
-    }
-
-    public double getLearningRate() {
-        return rate_eta * Math.pow(rate_alpha, -(double) iter / MAX_ITER);
     }
 
     private double getVoteLogLikelihood() {
@@ -939,8 +1087,8 @@ public class SLDAIdealPoint extends AbstractTopicBasedIdealPoint {
             ArrayList<String> entryFiles = new ArrayList<>();
             entryFiles.add(filename + ModelFileExt);
             entryFiles.add(filename + AssignmentFileExt);
-            entryFiles.add(filename + ".bill");
-            entryFiles.add(filename + ".author");
+            entryFiles.add(filename + BillFileExt);
+            entryFiles.add(filename + AuthorFileExt);
 
             this.outputZipFile(filepath, contentStrs, entryFiles);
         } catch (Exception e) {
