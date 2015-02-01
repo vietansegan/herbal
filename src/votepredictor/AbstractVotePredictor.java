@@ -233,7 +233,7 @@ public abstract class AbstractVotePredictor extends AbstractModel {
      * @param predictedValues Predicted values
      * @return List of evaluation measurements
      */
-    public static ArrayList<Measurement> evaluate(
+    public static ArrayList<Measurement> evaluateAll(
             int[][] votes,
             boolean[][] testVotes,
             SparseVector[] predictedValues) {
@@ -308,6 +308,66 @@ public abstract class AbstractVotePredictor extends AbstractModel {
         for (Measurement m : withRankPerf.getMeasurements()) {
             measurements.add(m);
         }
+        return measurements;
+    }
+    
+    public static ArrayList<Measurement> evaluate(
+            int[][] votes,
+            boolean[][] testVotes,
+            SparseVector[] predictedValues) {
+        ArrayList<Measurement> measurements = new ArrayList<>();
+
+        double llh = 0.0;
+        int count = 0;
+        int posCount = 0;
+        int negCount = 0;
+        int correctCount = 0;
+        double mae = 0.0;
+        double mse = 0.0;
+        Set<String> withVotes = new HashSet<>();
+        ArrayList<String> voteList = new ArrayList<>();
+        ArrayList<Double> voteScores = new ArrayList<>();
+        for (int aa = 0; aa < votes.length; aa++) {
+            for (int vv = 0; vv < votes[aa].length; vv++) {
+                if (!testVotes[aa][vv]) {
+                    continue;
+                }
+                String key = aa + "_" + vv;
+                double val = predictedValues[aa].get(vv);
+                voteList.add(key);
+                voteScores.add(val);
+                mae += Math.abs(votes[aa][vv] - val);
+                mse += Math.pow(votes[aa][vv] - val, 2);
+
+                if (votes[aa][vv] == Vote.WITH) {
+                    withVotes.add(key);
+                    llh += Math.log(val);
+                    if (val >= 0.5) {
+                        correctCount++;
+                    }
+                    posCount++;
+                } else if (votes[aa][vv] == Vote.AGAINST) {
+                    llh += Math.log(1.0 - val);
+                    if (val < 0.5) {
+                        correctCount++;
+                    }
+                    negCount++;
+                } else {
+                    throw new RuntimeException("Missing data");
+                }
+                count++;
+            }
+        }
+
+        // compute log likelihood of test data
+        measurements.add(new Measurement("count", count));
+        measurements.add(new Measurement("positive count", posCount));
+        measurements.add(new Measurement("negative count", negCount));
+        measurements.add(new Measurement("loglikelihood", llh));
+        measurements.add(new Measurement("avg-loglikelihood", llh / count));
+        measurements.add(new Measurement("accuracy", (double) correctCount / count));
+        measurements.add(new Measurement("mae", (double) mae / count));
+        measurements.add(new Measurement("mse", (double) mse / count));
         return measurements;
     }
 }

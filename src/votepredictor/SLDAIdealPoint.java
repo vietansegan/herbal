@@ -696,14 +696,14 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
                 logln("--- Evaluating ...");
                 SparseVector[] predictions = predictInMatrix();
                 ArrayList<Measurement> measurements = AbstractVotePredictor
-                        .evaluate(votes, validVotes, predictions);
+                        .evaluateAll(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
                     logln(">>> i >>> " + m.getName() + ": " + m.getValue());
                 }
 
                 predictions = predictOutMatrix();
                 measurements = AbstractVotePredictor
-                        .evaluate(votes, validVotes, predictions);
+                        .evaluateAll(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
                     logln(">>> o >>> " + m.getName() + ": " + m.getValue());
                 }
@@ -929,7 +929,7 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
                     grad += x[bb] * (getVote(aa, bb) - prob); // only work for 0 and 1
                 }
             }
-            grad -= (u[aa] - authorMeans[aa]) / sigma; // prior
+            grad -= (u[aa] - authorMeans[aa]) / rho; // prior
             u[aa] += aRate * grad; // update
         }
     }

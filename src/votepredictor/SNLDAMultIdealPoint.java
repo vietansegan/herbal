@@ -656,7 +656,7 @@ public class SNLDAMultIdealPoint extends AbstractSampler {
     private void evaluate() {
         SparseVector[] predictions = test(validVotes);
         ArrayList<Measurement> measurements = AbstractVotePredictor
-                .evaluate(votes, validVotes, predictions);
+                .evaluateAll(votes, validVotes, predictions);
         for (Measurement m : measurements) {
             logln(">>> >>> " + m.getName() + ": " + m.getValue());
         }

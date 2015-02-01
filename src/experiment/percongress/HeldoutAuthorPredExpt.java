@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 import java.util.Random;
 import org.apache.commons.cli.ParseException;
 import sampling.likelihood.CascadeDirMult.PathAssumption;
@@ -130,6 +131,21 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
      */
     @Override
     protected void runModel(File outputFolder) {
+        int[][] voteTextWords = voteDataset.getWords();
+
+        // get words of training bills
+        trainVoteWords = new int[debateVoteData.getVoteVocab().size()][];
+        trainVoteTopics = new int[debateVoteData.getVoteVocab().size()];
+
+        List<String> billIdList = Arrays.asList(billData.getDocIds());
+        for (int bb = 0; bb < trainVoteWords.length; bb++) {
+            String keyvote = debateVoteData.getVoteVocab().get(bb);
+            String billId = voteToBillMapping.get(keyvote);
+            int idx = billIdList.indexOf(billId);
+
+            trainVoteWords[bb] = concatArray(billData.getWords()[idx], voteTextWords[bb]);
+            trainVoteTopics[bb] = billData.getTopics()[idx];
+        }
         String model = CLIUtils.getStringArgument(cmd, "model", "random");
         switch (model) {
             case "random":
@@ -156,11 +172,23 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "lexical-slda-ideal-point":
                 runLexicalSLDAIdealPoint(outputFolder);
                 break;
+            case "hier-mult-tipm":
+                runHierMultTIPM(outputFolder);
+                break;
+            case "hier-mult-shdp":
+                runHierMultSHDP(outputFolder);
+                break;
             case "hybrid-slda-ideal-point":
                 runHybridSLDAIdealPoint(outputFolder);
                 break;
+            case "hybrid-slda-multiple-ideal-point":
+                runHybridSLDAMultipleIdealPoint(outputFolder);
+                break;
             case "slda-mult-ideal-point":
                 runSLDAMultIdealPoint(outputFolder);
+                break;
+            case "recursive-slda-ideal-point":
+                runRecursiveSLDAIdealPoint(outputFolder);
                 break;
             case "snlda-ideal-point":
                 runSNLDAIdealPoint(outputFolder);
@@ -168,11 +196,17 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             case "lexical-snlda-ideal-point":
                 runLexicalSNLDAIdealPoint(outputFolder);
                 break;
+            case "hybrid-snlda-ideal-point":
+                runHybridSNLDAIdealPoint(outputFolder);
+                break;
             case "snlda-mult-ideal-point":
                 runSNLDAMultIdealPoint(outputFolder);
                 break;
             case "snhdp-ideal-point":
                 runSNHDPIdealPoint(outputFolder);
+                break;
+            case "hybrid-snhdp-ideal-point":
+                runHybridSNHDPIdealPoint(outputFolder);
                 break;
             case "combine":
                 combineModel(outputFolder);
@@ -513,7 +547,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
-                    AbstractVotePredictor.evaluate(votes, trainVotes, predictions));
+                    AbstractVotePredictor.evaluateAll(votes, trainVotes, predictions));
         }
 
         if (cmd.hasOption("testauthor")) {
@@ -635,7 +669,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             AbstractVotePredictor.outputPredictions(new File(teResultFolder, PREDICTION_FILE),
                     votes, predictions);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
-                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+                    AbstractVotePredictor.evaluateAll(votes, testVotes, predictions));
         }
 
         if (cmd.hasOption("analyzeerror")) {
@@ -676,7 +710,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             File teResultFolder = new File(predFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
-                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+                    AbstractVotePredictor.evaluateAll(votes, testVotes, predictions));
         }
     }
 
@@ -713,7 +747,7 @@ public class HeldoutAuthorPredExpt extends VotePredExpt {
             File teResultFolder = new File(predFolder, TEST_PREFIX + RESULT_FOLDER);
             IOUtils.createFolder(teResultFolder);
             AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE),
-                    AbstractVotePredictor.evaluate(votes, testVotes, predictions));
+                    AbstractVotePredictor.evaluateAll(votes, testVotes, predictions));
         }
     }
 

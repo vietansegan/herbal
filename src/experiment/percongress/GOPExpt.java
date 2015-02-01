@@ -18,7 +18,7 @@ import util.IOUtils;
  * @author vietan
  */
 public class GOPExpt extends VotePredExpt {
-
+    
     @Override
     public String getConfiguredExptFolder() {
         return "gop";
@@ -32,11 +32,11 @@ public class GOPExpt extends VotePredExpt {
         if (verbose) {
             logln("Running models ...");
         }
-
+        
         setupSampling();
-
+        
         loadFormattedData();
-
+        
         trainAuthorIndices = new ArrayList<>();
         for (int aa = 0; aa < debateVoteData.getAuthorVocab().size(); aa++) {
             String authorId = debateVoteData.getAuthorVocab().get(aa);
@@ -45,7 +45,7 @@ public class GOPExpt extends VotePredExpt {
                 trainAuthorIndices.add(aa);
             }
         }
-
+        
         trainVotes = new boolean[votes.length][];
         for (int aa = 0; aa < votes.length; aa++) {
             trainVotes[aa] = new boolean[votes[aa].length];
@@ -58,7 +58,7 @@ public class GOPExpt extends VotePredExpt {
                 }
             }
         }
-
+        
         trainDebateIndices = new ArrayList<>();
         for (int dd = 0; dd < debateVoteData.getWords().length; dd++) {
             int author = debateVoteData.getAuthors()[dd];
@@ -66,41 +66,43 @@ public class GOPExpt extends VotePredExpt {
                 this.trainDebateIndices.add(dd);
             }
         }
-
+        
         if (verbose) {
             logln("--- # Republicans: " + trainAuthorIndices.size()
                     + " / " + debateVoteData.getAuthorVocab().size());
             logln("--- # debates: " + this.trainDebateIndices.size()
                     + " / " + debateVoteData.getWords().length);
         }
-
+        
         File estimateFolder = new File(new File(experimentPath, congressNum),
                 getConfiguredExptFolder());
         IOUtils.createFolder(estimateFolder);
+
+        // run models
         this.runModel(estimateFolder);
     }
-
+    
     public static void main(String[] args) {
         try {
             long sTime = System.currentTimeMillis();
-
+            
             addOptions();
-
+            
             cmd = parser.parse(options, args);
             if (cmd.hasOption("help")) {
                 CLIUtils.printHelp(getHelpString(
                         GOPExpt.class.getName()), options);
                 return;
             }
-
+            
             verbose = cmd.hasOption("v");
             debug = cmd.hasOption("d");
-
+            
             Congress.setVerbose(verbose);
             Congress.setDebug(debug);
             TextDataset.setDebug(debug);
             TextDataset.setVerbose(verbose);
-
+            
             GOPExpt expt = new GOPExpt();
             expt.setup();
             String runMode = CLIUtils.getStringArgument(cmd, "run-mode", "run");

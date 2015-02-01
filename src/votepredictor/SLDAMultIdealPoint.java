@@ -45,7 +45,6 @@ public class SLDAMultIdealPoint extends AbstractTextIdealPoint {
     protected double[][] us; // [A][K]
     // internal
     protected SparseVector[] za; // [A][K]
-    protected int numTokensChanged;
     protected int numTokensAccepted;
 
     // lexical regression
@@ -725,7 +724,7 @@ public class SLDAMultIdealPoint extends AbstractTextIdealPoint {
                 logln("--- Evaluating in-matrix ...");
                 SparseVector[] predictions = predictInMatrix();
                 ArrayList<Measurement> measurements = AbstractVotePredictor
-                        .evaluate(votes, validVotes, predictions);
+                        .evaluateAll(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
                     logln(">>> i >>> " + m.getName() + ": " + m.getValue());
                 }
@@ -733,7 +732,7 @@ public class SLDAMultIdealPoint extends AbstractTextIdealPoint {
                 logln("--- Evaluating out-matrix ...");
                 predictions = predictOutMatrix();
                 measurements = AbstractVotePredictor
-                        .evaluate(votes, validVotes, predictions);
+                        .evaluateAll(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
                     logln(">>> o >>> " + m.getName() + ": " + m.getValue());
                 }

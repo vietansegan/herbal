@@ -385,8 +385,12 @@ public class LexicalIdealPoint extends AbstractTextIdealPoint {
         long sTime = System.currentTimeMillis();
 
         OWLQNLinearRegression opt = new OWLQNLinearRegression(basename, l1, l2);
-        opt.train(authorVectors, u, V);
-        this.tau = opt.getWeights();
+        try {
+            opt.train(authorVectors, u, V);
+            this.tau = opt.getWeights();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 
         long eTime = System.currentTimeMillis() - sTime;
         if (verbose) {

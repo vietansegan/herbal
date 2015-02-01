@@ -267,16 +267,18 @@ public class IdealPoint extends AbstractVotePredictor {
         }
         return llh / count;
     }
-
+    
     public SparseVector[] test(boolean[][] testVotes) {
         SparseVector[] predictions = new SparseVector[testVotes.length];
-        for (int aa = 0; aa < predictions.length; aa++) {
-            predictions[aa] = new SparseVector();
-            for (int bb = 0; bb < testVotes[aa].length; bb++) {
+        for (int aa = 0; aa < A; aa++) {
+            int author = authorIndices.get(aa);
+            predictions[author] = new SparseVector(testVotes[author].length);
+            for (int bb = 0; bb < B; bb++) {
+                int bill = billIndices.get(bb);
                 if (testVotes[aa][bb]) {
                     double score = Math.exp(u[aa] * x[bb] + y[bb]);
-                    double val = score / (1 + score);
-                    predictions[aa].set(bb, val);
+                    double prob = score / (1.0 + score);
+                    predictions[author].set(bill, prob);
                 }
             }
         }

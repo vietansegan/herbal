@@ -693,7 +693,7 @@ public class SNLDAIdealPoint extends AbstractTextIdealPoint {
                 logln("--- Evaluating ...");
                 SparseVector[] predictions = predictInMatrix();
                 ArrayList<Measurement> measurements = AbstractVotePredictor
-                        .evaluate(votes, validVotes, predictions);
+                        .evaluateAll(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
                     logln(">>> >>> " + m.getName() + ": " + m.getValue());
                 }

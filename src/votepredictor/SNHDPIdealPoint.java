@@ -62,7 +62,6 @@ public class SNHDPIdealPoint extends AbstractTextIdealPoint {
     protected double[] y; // [B]
     protected double[] authorMeans;
     // internal
-    protected int numTokensChanged;
     protected double[] background;
     protected int numTokensAccepted;
     protected ArrayList<String> labelVocab;
@@ -744,7 +743,7 @@ public class SNHDPIdealPoint extends AbstractTextIdealPoint {
                 logln("--- Evaluating ...");
                 SparseVector[] predictions = predictInMatrix();
                 ArrayList<Measurement> measurements = AbstractVotePredictor
-                        .evaluate(votes, validVotes, predictions);
+                        .evaluateAll(votes, validVotes, predictions);
                 for (Measurement m : measurements) {
                     logln(">>> >>> " + m.getName() + ": " + m.getValue());
                 }
@@ -1882,9 +1881,9 @@ public class SNHDPIdealPoint extends AbstractTextIdealPoint {
          * approximated counts.
          */
         void updateGlobalTheta() {
-            if (!isExtensible()) {
-                return;
-            }
+//            if (!isExtensible()) {
+//                return;
+//            }
             double gAlpha = getGlobalAlpha(level);
 
             // update counts
