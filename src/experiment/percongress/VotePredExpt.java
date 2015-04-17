@@ -327,8 +327,7 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                     legVotes = new HashMap<String, FWVote>();
                 }
                 ArrayList<FWVote> lv = fwYears[ii].getVotes(lid);
-                for (int jj = 0; jj < lv.size(); jj++) {
-                    FWVote v = lv.get(jj);
+                for (FWVote v : lv) {
                     int rollcall = Integer.parseInt(v.getBill().getProperty(FWBill.ROLL_CALL));
                     legVotes.put(years[ii] + "_" + rollcall, v);
                 }
@@ -1506,7 +1505,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
 
             double[] rhos = {0.1};
             double[] sigmas = {0.1};
-            double[] lambdas = {2.0, 5.0, 10.0, 25.0, 50.0, 100.0};
             double[] l1s = {1E-7, 1E-6, 1E-5, 1E-4, 1E-3, 1E-2, 1E-1, 0.0};
             double[] l2s = {1E-7, 1E-6, 1E-5, 1E-4, 1E-3, 1E-2, 1E-1, 0.0};
 
@@ -1514,75 +1512,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
             IOUtils.createFolder(devFolder);
             boolean hasHeader = false;
             try {
-//                BufferedWriter lWriter = IOUtils.getBufferedWriter(new File(devFolder, "dev-lbfgs.txt"));
-//                for (double r : rhos) {
-//                    for (double s : sigmas) {
-//                        for (double l : lambdas) {
-//                            if (verbose) {
-//                                logln("--- Dev L-LBFGS: rho = " + r
-//                                        + ". sigma = " + s
-//                                        + ". lambda = " + l);
-//                            }
-//
-//                            lip = new LexicalIdealPoint();
-//                            lip.configure(outputFolder.getAbsolutePath(),
-//                                    debateVoteData.getWordVocab().size(), r, s, l,
-//                                    max_iters, cmd.hasOption("tfidf"));
-//                            samplerFolder = new File(outputFolder, lip.getSamplerFolder());
-//                            teResultFolder = new File(samplerFolder, TEST_PREFIX + RESULT_FOLDER);
-//                            IOUtils.createFolder(teResultFolder);
-//
-//                            // train
-//                            if (verbose) {
-//                                logln("--- --- Training ...");
-//                            }
-//                            lip.setupData(trainDebateIndices,
-//                                    debateVoteData.getWords(),
-//                                    debateVoteData.getAuthors(),
-//                                    votes,
-//                                    trainAuthorIndices,
-//                                    trainBillIndices,
-//                                    trainVotes);
-//                            lip.initialize();
-//                            lip.iterate();
-//                            lip.outputState(new File(samplerFolder, MODEL_FILE));
-//
-//                            // test
-//                            if (verbose) {
-//                                logln("--- --- Testing ...");
-//                            }
-//                            lip.setupData(testDebateIndices,
-//                                    debateVoteData.getWords(),
-//                                    debateVoteData.getAuthors(),
-//                                    null,
-//                                    testAuthorIndices,
-//                                    testBillIndices,
-//                                    testVotes);
-//                            lip.inputModel(new File(samplerFolder, MODEL_FILE).toString());
-//                            SparseVector[] predictions = lip.predictOutMatrix();
-//                            ArrayList<Measurement> results = AbstractVotePredictor.
-//                                    evaluateAll(votes, testVotes, predictions);
-//                            AbstractModel.outputPerformances(new File(teResultFolder, RESULT_FILE), results);
-//
-//                            if (!hasHeader) {
-//                                lWriter.write("rho\tsigma\tlambda");
-//                                for (Measurement m : results) {
-//                                    lWriter.write("\t" + m.getName());
-//                                }
-//                                lWriter.write("\n");
-//                                hasHeader = true;
-//                            }
-//
-//                            lWriter.write(r + "\t" + s + "\t" + l);
-//                            for (Measurement m : results) {
-//                                lWriter.write("\t" + m.getValue());
-//                            }
-//                            lWriter.write("\n");
-//                        }
-//                    }
-//                }
-//                lWriter.close();
-
                 BufferedWriter oWriter = IOUtils.getBufferedWriter(new File(devFolder, "dev-owlqn.txt"));
                 for (double r : rhos) {
                     for (double s : sigmas) {
