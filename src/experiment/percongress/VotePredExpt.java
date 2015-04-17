@@ -65,7 +65,6 @@ import votepredictor.textidealpoint.flat.LexicalSLDAIdealPoint;
 import votepredictor.textidealpoint.flat.HybridSLDAMultipleIdealPoint;
 import votepredictor.textidealpoint.hierarchy.HierMultSHDP;
 import votepredictor.textidealpoint.hierarchy.HierMultiTIPM;
-import votepredictor.textidealpoint.hierarchy.HierSingleTIPM;
 import votepredictor.textidealpoint.hierarchy.MultTopicIdealPoint;
 
 /**
@@ -866,9 +865,6 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
                 break;
             case "hier-mult-shdp":
                 runHierMultSHDP(outputFolder);
-                break;
-            case "hier-single-tipm":
-                runHierSingleTIPM(outputFolder);
                 break;
             case "lexical-slda-ideal-point":
                 runLexicalSLDAIdealPoint(outputFolder);
@@ -1724,141 +1720,141 @@ public class VotePredExpt extends AbstractExperiment<Congress> {
         }
     }
 
-    protected void runHierSingleTIPM(File outputFolder) {
-        int K;
-        double[][] issuePhis;
-        if (cmd.hasOption("K")) {
-            issuePhis = null;
-            K = Integer.parseInt(cmd.getOptionValue("K"));
-        } else {
-            issuePhis = estimateIssues();
-            K = issuePhis.length;
-        }
-        int J = CLIUtils.getIntegerArgument(cmd, "J", 5);
-        double topicAlpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
-        double topicBeta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
-        double frameAlpha = topicAlpha;
-        double frameBeta = topicAlpha;
-
-        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 0.1);
-        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 0.5);
-        double gamma = CLIUtils.getDoubleArgument(cmd, "gamma", 2.5);
-
-        HierSingleTIPM sampler = new HierSingleTIPM();
-        sampler.setVerbose(verbose);
-        sampler.setDebug(debug);
-        sampler.setLog(true);
-        sampler.setReport(true);
-        sampler.setWordVocab(debateVoteData.getWordVocab());
-        sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
-        sampler.setVoteVocab(debateVoteData.getVoteVocab());
-
-        sampler.configure(outputFolder.getAbsolutePath(),
-                debateVoteData.getWordVocab().size(), K, J,
-                topicAlpha, frameAlpha, topicBeta, frameBeta,
-                rho, sigma, gamma, issuePhis,
-                initState, paramOpt,
-                burn_in, max_iters, sample_lag, report_interval);
-        File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
-        IOUtils.createFolder(samplerFolder);
-
-        if (cmd.hasOption("train")) {
-            sampler.setupData(trainDebateIndices,
-                    debateVoteData.getWords(),
-                    debateVoteData.getAuthors(),
-                    votes,
-                    trainAuthorIndices,
-                    trainBillIndices,
-                    trainVotes);
-            sampler.setTopicVocab(policyAgendaIssues);
-            sampler.initialize();
-
-            outputAuthorScore(new File(samplerFolder, AuthorScoreFile + ".init"),
-                    debateVoteData.getAuthorVocab(),
-                    trainAuthorIndices,
-                    trainVotes,
-                    sampler.getUs(),
-                    debateVoteData.getAuthorTable());
-
-            outputVoteScores(new File(samplerFolder, VoteScoreFile + ".init"),
-                    debateVoteData.getVoteVocab(),
-                    trainBillIndices,
-                    sampler.getXs(), sampler.getYs(),
-                    debateVoteData.getVoteTable());
-
-            sampler.metaIterate();
-
-            if (issuePhis == null) {
-                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
-                        numTopWords);
-            } else {
-                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
-                        numTopWords, policyAgendaIssues);
-            }
-
-            outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
-                    debateVoteData.getAuthorVocab(),
-                    trainAuthorIndices,
-                    trainVotes,
-                    sampler.getUs(),
-                    debateVoteData.getAuthorTable());
-
-            outputAuthorScore(new File(samplerFolder, AuthorScoreFile + ".predicted"),
-                    debateVoteData.getAuthorVocab(),
-                    trainAuthorIndices,
-                    trainVotes,
-                    sampler.getPredictedUs(),
-                    debateVoteData.getAuthorTable());
-
-            outputAuthorScore(new File(samplerFolder, AuthorScoreFile + ".multiple"),
-                    debateVoteData.getAuthorVocab(),
-                    trainAuthorIndices,
-                    trainVotes,
-                    sampler.getUs(),
-                    sampler.getMultipleUs(),
-                    debateVoteData.getAuthorTable());
-
-            outputVoteScores(new File(samplerFolder, VoteScoreFile),
-                    debateVoteData.getVoteVocab(),
-                    trainBillIndices,
-                    sampler.getXs(), sampler.getYs(),
-                    debateVoteData.getVoteTable());
-
-            File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
-            IOUtils.createFolder(trResultFolder);
-            SparseVector[] predictions = sampler.predictInMatrix();
-            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
-                    votes, predictions);
-            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
-                    AbstractVotePredictor.evaluateAll(votes, trainVotes, predictions));
-        }
-
-        if (cmd.hasOption("analyze")) {
-            sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
-            sampler.setupData(trainDebateIndices,
-                    debateVoteData.getWords(),
-                    debateVoteData.getAuthors(),
-                    votes,
-                    trainAuthorIndices,
-                    trainBillIndices,
-                    trainVotes);
-            sampler.setTopicVocab(policyAgendaIssues);
-
-            File analysisFolder = new File(samplerFolder, "analysis");
-            IOUtils.createFolder(analysisFolder);
-            sampler.loadEtaList();
-            sampler.inputFinalState();
-
-            sampler.outputTheta(new File(analysisFolder, "theta.txt"));
-            sampler.outputTopicFrameVariance(new File(analysisFolder, "eta_variances.txt"));
-            sampler.outputTopicTopWords(new File(analysisFolder, "top-words.txt"), numTopWords);
-            sampler.outputHierarchyWithDetails(new File(analysisFolder, "top-words-details.txt"),
-                    debateVoteData.getAuthorTable(),
-                    debateVoteData.getDocIds(),
-                    debateVoteData.getRawSentences());
-
-        }
-    }
+//    protected void runHierSingleTIPM(File outputFolder) {
+//        int K;
+//        double[][] issuePhis;
+//        if (cmd.hasOption("K")) {
+//            issuePhis = null;
+//            K = Integer.parseInt(cmd.getOptionValue("K"));
+//        } else {
+//            issuePhis = estimateIssues();
+//            K = issuePhis.length;
+//        }
+//        int J = CLIUtils.getIntegerArgument(cmd, "J", 5);
+//        double topicAlpha = CLIUtils.getDoubleArgument(cmd, "alpha", 0.1);
+//        double topicBeta = CLIUtils.getDoubleArgument(cmd, "beta", 0.1);
+//        double frameAlpha = topicAlpha;
+//        double frameBeta = topicAlpha;
+//
+//        double rho = CLIUtils.getDoubleArgument(cmd, "rho", 0.1);
+//        double sigma = CLIUtils.getDoubleArgument(cmd, "sigma", 0.5);
+//        double gamma = CLIUtils.getDoubleArgument(cmd, "gamma", 2.5);
+//
+//        HierSingleTIPM sampler = new HierSingleTIPM();
+//        sampler.setVerbose(verbose);
+//        sampler.setDebug(debug);
+//        sampler.setLog(true);
+//        sampler.setReport(true);
+//        sampler.setWordVocab(debateVoteData.getWordVocab());
+//        sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+//        sampler.setVoteVocab(debateVoteData.getVoteVocab());
+//
+//        sampler.configure(outputFolder.getAbsolutePath(),
+//                debateVoteData.getWordVocab().size(), K, J,
+//                topicAlpha, frameAlpha, topicBeta, frameBeta,
+//                rho, sigma, gamma, issuePhis,
+//                initState, paramOpt,
+//                burn_in, max_iters, sample_lag, report_interval);
+//        File samplerFolder = new File(outputFolder, sampler.getSamplerFolder());
+//        IOUtils.createFolder(samplerFolder);
+//
+//        if (cmd.hasOption("train")) {
+//            sampler.setupData(trainDebateIndices,
+//                    debateVoteData.getWords(),
+//                    debateVoteData.getAuthors(),
+//                    votes,
+//                    trainAuthorIndices,
+//                    trainBillIndices,
+//                    trainVotes);
+//            sampler.setTopicVocab(policyAgendaIssues);
+//            sampler.initialize();
+//
+//            outputAuthorScore(new File(samplerFolder, AuthorScoreFile + ".init"),
+//                    debateVoteData.getAuthorVocab(),
+//                    trainAuthorIndices,
+//                    trainVotes,
+//                    sampler.getUs(),
+//                    debateVoteData.getAuthorTable());
+//
+//            outputVoteScores(new File(samplerFolder, VoteScoreFile + ".init"),
+//                    debateVoteData.getVoteVocab(),
+//                    trainBillIndices,
+//                    sampler.getXs(), sampler.getYs(),
+//                    debateVoteData.getVoteTable());
+//
+//            sampler.metaIterate();
+//
+//            if (issuePhis == null) {
+//                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
+//                        numTopWords);
+//            } else {
+//                sampler.outputTopicTopWords(new File(samplerFolder, TopWordFile),
+//                        numTopWords, policyAgendaIssues);
+//            }
+//
+//            outputAuthorScore(new File(samplerFolder, AuthorScoreFile),
+//                    debateVoteData.getAuthorVocab(),
+//                    trainAuthorIndices,
+//                    trainVotes,
+//                    sampler.getUs(),
+//                    debateVoteData.getAuthorTable());
+//
+//            outputAuthorScore(new File(samplerFolder, AuthorScoreFile + ".predicted"),
+//                    debateVoteData.getAuthorVocab(),
+//                    trainAuthorIndices,
+//                    trainVotes,
+//                    sampler.getPredictedUs(),
+//                    debateVoteData.getAuthorTable());
+//
+//            outputAuthorScore(new File(samplerFolder, AuthorScoreFile + ".multiple"),
+//                    debateVoteData.getAuthorVocab(),
+//                    trainAuthorIndices,
+//                    trainVotes,
+//                    sampler.getUs(),
+//                    sampler.getMultipleUs(),
+//                    debateVoteData.getAuthorTable());
+//
+//            outputVoteScores(new File(samplerFolder, VoteScoreFile),
+//                    debateVoteData.getVoteVocab(),
+//                    trainBillIndices,
+//                    sampler.getXs(), sampler.getYs(),
+//                    debateVoteData.getVoteTable());
+//
+//            File trResultFolder = new File(samplerFolder, TRAIN_PREFIX + RESULT_FOLDER);
+//            IOUtils.createFolder(trResultFolder);
+//            SparseVector[] predictions = sampler.predictInMatrix();
+//            AbstractVotePredictor.outputPredictions(new File(trResultFolder, PREDICTION_FILE),
+//                    votes, predictions);
+//            AbstractModel.outputPerformances(new File(trResultFolder, RESULT_FILE),
+//                    AbstractVotePredictor.evaluateAll(votes, trainVotes, predictions));
+//        }
+//
+//        if (cmd.hasOption("analyze")) {
+//            sampler.setAuthorVocab(debateVoteData.getAuthorVocab());
+//            sampler.setupData(trainDebateIndices,
+//                    debateVoteData.getWords(),
+//                    debateVoteData.getAuthors(),
+//                    votes,
+//                    trainAuthorIndices,
+//                    trainBillIndices,
+//                    trainVotes);
+//            sampler.setTopicVocab(policyAgendaIssues);
+//
+//            File analysisFolder = new File(samplerFolder, "analysis");
+//            IOUtils.createFolder(analysisFolder);
+//            sampler.loadEtaList();
+//            sampler.inputFinalState();
+//
+//            sampler.outputTheta(new File(analysisFolder, "theta.txt"));
+//            sampler.outputTopicFrameVariance(new File(analysisFolder, "eta_variances.txt"));
+//            sampler.outputTopicTopWords(new File(analysisFolder, "top-words.txt"), numTopWords);
+//            sampler.outputHierarchyWithDetails(new File(analysisFolder, "top-words-details.txt"),
+//                    debateVoteData.getAuthorTable(),
+//                    debateVoteData.getDocIds(),
+//                    debateVoteData.getRawSentences());
+//
+//        }
+//    }
 
     protected double[][] createBillPriors() {
         int K = policyAgendaIssues.size();
