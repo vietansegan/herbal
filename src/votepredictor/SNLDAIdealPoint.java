@@ -13,7 +13,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Stack;
-import optimization.RidgeLinearRegressionLBFGS;
+import optimization.RidgeLinearRegressionOptimizable;
 import sampler.unsupervised.RecursiveLDA;
 import sampling.likelihood.CascadeDirMult.PathAssumption;
 import sampling.likelihood.DirMult;
@@ -1037,7 +1037,7 @@ public class SNLDAIdealPoint extends AbstractTextIdealPoint {
             etas[kk] = nodeList.get(kk).eta;
         }
 
-        RidgeLinearRegressionLBFGS optimizable = new RidgeLinearRegressionLBFGS(
+        RidgeLinearRegressionOptimizable optimizable = new RidgeLinearRegressionOptimizable(
                 u, etas, designMatrix, rho, mu, sigma);
 
         LimitedMemoryBFGS optimizer = new LimitedMemoryBFGS(optimizable);

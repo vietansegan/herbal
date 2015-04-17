@@ -83,6 +83,14 @@ public class IdealPoint extends AbstractVotePredictor {
         return this.y;
     }
 
+    public int getPositiveAnchor() {
+        return this.posAnchor;
+    }
+
+    public int getNegativeAnchor() {
+        return this.negAnchor;
+    }
+
     public ArrayList<String> getAuthorVocab() {
         return this.authorVocab;
     }
@@ -267,7 +275,7 @@ public class IdealPoint extends AbstractVotePredictor {
         }
         return llh / count;
     }
-    
+
     public SparseVector[] test(boolean[][] testVotes) {
         SparseVector[] predictions = new SparseVector[testVotes.length];
         for (int aa = 0; aa < A; aa++) {

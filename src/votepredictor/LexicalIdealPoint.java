@@ -9,7 +9,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import optimization.OWLQNLinearRegression;
-import optimization.RidgeLinearRegressionLBFGS;
+import optimization.RidgeLinearRegressionOptimizable;
 import sampling.util.SparseCount;
 import util.IOUtils;
 import util.MiscUtils;
@@ -350,7 +350,7 @@ public class LexicalIdealPoint extends AbstractTextIdealPoint {
         }
         long sTime = System.currentTimeMillis();
 
-        RidgeLinearRegressionLBFGS optimizable = new RidgeLinearRegressionLBFGS(
+        RidgeLinearRegressionOptimizable optimizable = new RidgeLinearRegressionOptimizable(
                 u, tau, authorVectors, rho, 0.0, lambda);
 
         LimitedMemoryBFGS optimizer = new LimitedMemoryBFGS(optimizable);

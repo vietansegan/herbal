@@ -1,5 +1,6 @@
 package votepredictor;
 
+import data.Vote;
 import votepredictor.textidealpoint.AbstractTextIdealPoint;
 import cc.mallet.optimize.LimitedMemoryBFGS;
 import cc.mallet.optimize.Optimizable;
@@ -10,7 +11,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import optimization.RidgeLinearRegressionLBFGS;
+import optimization.RidgeLinearRegressionOptimizable;
 import sampler.unsupervised.LDA;
 import sampling.likelihood.DirMult;
 import util.IOUtils;
@@ -39,6 +40,7 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
 
     // input
     protected int K; // number of topics
+    protected double[][] topicPriors;
 
     // latent variables
     protected DirMult[] topicWords;
@@ -60,6 +62,13 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
 
     public SLDAIdealPoint(String bname) {
         this.basename = bname;
+    }
+
+    public void setTopicPriors(double[][] topicPriors) {
+        if (topicPriors.length != K) {
+            throw new MismatchRuntimeException(topicPriors.length, K);
+        }
+        this.topicPriors = topicPriors;
     }
 
     public void configure(SLDAIdealPoint sampler) {
@@ -323,8 +332,8 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
         for (int aa = 0; aa < A; aa++) {
             int author = authorIndices.get(aa);
             predictions[author] = new SparseVector(validVotes[author].length);
-            for (int ii = 0; ii < predList.size(); ii++) {
-                predictions[author].add(predList.get(ii)[author]);
+            for (SparseVector[] pred : predList) {
+                predictions[author].add(pred[author]);
             }
             predictions[author].scale(1.0 / predList.size());
         }
@@ -506,6 +515,26 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
         if (verbose) {
             logln("--- Initializing random UXY using anchored legislators ...");
         }
+        
+        ArrayList<RankingItem<Integer>> rankAuthors = new ArrayList<>();
+        for (int aa = 0; aa < A; aa++) {
+            int agreeCount = 0;
+            int totalCount = 0;
+            for (int bb = 0; bb < B; bb++) {
+                if (isValidVote(aa, bb)) {
+                    if (votes[aa][bb] == Vote.WITH) {
+                        agreeCount++;
+                    }
+                    totalCount++;
+                }
+            }
+            double val = (double) agreeCount / totalCount;
+            rankAuthors.add(new RankingItem<Integer>(aa, val));
+        }
+        Collections.sort(rankAuthors);
+        posAnchor = rankAuthors.get(0).getObject();
+        negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
+        
         BayesianIdealPoint bip = new BayesianIdealPoint();
         bip.configure(1.0, 0.01, 5000, 0.0, sigma);
         bip.setTrain(votes, authorIndices, billIndices, validVotes);
@@ -529,47 +558,6 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
         this.u = bip.getUs();
         this.x = bip.getXs();
         this.y = bip.getYs();
-
-//        double anchorMean = 3.0;
-//        double anchorVar = 0.01;
-//        ArrayList<RankingItem<Integer>> rankAuthors = new ArrayList<>();
-//        for (int aa = 0; aa < A; aa++) {
-//            int withCount = 0;
-//            int againstCount = 0;
-//            for (int bb = 0; bb < B; bb++) {
-//                if (isValidVote(aa, bb)) {
-//                    if (getVote(aa, bb) == Vote.WITH) {
-//                        withCount++;
-//                    } else if (getVote(aa, bb) == Vote.AGAINST) {
-//                        againstCount++;
-//                    }
-//                }
-//            }
-//            double val = (double) withCount / (againstCount + withCount);
-//            rankAuthors.add(new RankingItem<Integer>(aa, val));
-//        }
-//        Collections.sort(rankAuthors);
-//        posAnchor = rankAuthors.get(0).getObject();
-//        negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
-//
-//        this.u = new double[A];
-//        for (int ii = 0; ii < A; ii++) {
-//            int aa = rankAuthors.get(ii).getObject();
-//            if (ii < A / 4) {
-//                this.u[aa] = SamplerUtils.getGaussian(anchorMean, anchorVar);
-//            } else if (ii > 3 * A / 4) {
-//                this.u[aa] = SamplerUtils.getGaussian(-anchorMean, anchorVar);
-//            } else {
-//                this.u[aa] = SamplerUtils.getGaussian(mu, sigma);
-//            }
-//        }
-//
-//        this.x = new double[B];
-//        this.y = new double[B];
-//        for (int b = 0; b < B; b++) {
-//            this.x[b] = SamplerUtils.getGaussian(mu, sigma);
-//            this.y[b] = SamplerUtils.getGaussian(mu, sigma);
-//        }
     }
 
     protected void initializeAssignments() {
@@ -602,42 +590,13 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
         int lda_burnin = 10;
         int lda_maxiter = 100;
         int lda_samplelag = 10;
-        LDA lda = new LDA();
-        lda.setDebug(debug);
-        lda.setVerbose(verbose);
-        lda.setLog(false);
         double lda_alpha = hyperparams.get(ALPHA);
         double lda_beta = hyperparams.get(BETA);
-
-        lda.configure(folder, V, K, lda_alpha, lda_beta, InitialState.RANDOM, false,
-                lda_burnin, lda_maxiter, lda_samplelag, lda_samplelag);
-
-        int[][] ldaZ = null;
-        try {
-            File ldaFile = new File(lda.getSamplerFolderPath(), basename + ".zip");
-            lda.train(words, null);
-            if (ldaFile.exists()) {
-                if (verbose) {
-                    logln("--- --- LDA file exists. Loading from " + ldaFile);
-                }
-                lda.inputState(ldaFile);
-            } else {
-                if (verbose) {
-                    logln("--- --- LDA not found. Running LDA ...");
-                }
-                lda.initialize();
-                lda.iterate();
-                IOUtils.createFolder(lda.getSamplerFolderPath());
-                lda.outputState(ldaFile);
-                lda.setWordVocab(wordVocab);
-                lda.outputTopicTopWords(new File(lda.getSamplerFolderPath(), TopWordFile), 20);
-            }
-            ldaZ = lda.getZs();
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException("Exception while running LDA for initialization");
-        }
-        setLog(log);
+        LDA lda = runLDA(words, K, V,
+                null, topicPriors,
+                lda_alpha, lda_beta,
+                lda_burnin, lda_maxiter, lda_samplelag);
+        int[][] ldaZ = lda.getZs();
 
         // initialize assignments
         for (int dd = 0; dd < D; dd++) {
@@ -863,7 +822,7 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
             }
         }
 
-        RidgeLinearRegressionLBFGS optimizable = new RidgeLinearRegressionLBFGS(
+        RidgeLinearRegressionOptimizable optimizable = new RidgeLinearRegressionOptimizable(
                 u, eta, designMatrix, rho, mu, sigma);
 
         LimitedMemoryBFGS optimizer = new LimitedMemoryBFGS(optimizable);
@@ -1240,6 +1199,7 @@ public class SLDAIdealPoint extends AbstractTextIdealPoint {
         }
     }
 
+    @Override
     public void outputTopicTopWords(File file, int numTopWords) {
         this.outputTopicTopWords(file, numTopWords, null);
     }

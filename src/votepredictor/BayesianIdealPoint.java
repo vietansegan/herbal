@@ -76,25 +76,14 @@ public class BayesianIdealPoint extends IdealPoint {
         posAnchor = rankAuthors.get(0).getObject();
         negAnchor = rankAuthors.get(rankAuthors.size() - 1).getObject();
 
+        double anchorVal = Math.sqrt(var);
         this.u = new double[A];
-//        for (int ii = 0; ii < A; ii++) {
-//            int aa = rankAuthors.get(ii).getObject();
-//            if (ii < A / 4) {
-//                this.u[aa] = SamplerUtils.getGaussian(newAnchorMean, anchorVar);
-//            } else if (ii > 3 * A / 4) {
-//                this.u[aa] = SamplerUtils.getGaussian(-newAnchorMean, anchorVar);
-//            } else {
-//                this.u[aa] = SamplerUtils.getGaussian(mean, var);
-//            }
-//        }
-
-        double threeStdv = 3 * Math.sqrt(var);
         for (int ii = 0; ii < A; ii++) {
             int aa = rankAuthors.get(ii).getObject();
-            if (ii < 5) {
-                this.u[aa] = threeStdv;
-            } else if (ii >= A - 5) {
-                this.u[aa] = -threeStdv;
+            if (ii < A / 4) {
+                this.u[aa] = SamplerUtils.getGaussian(anchorVal, anchorVar);
+            } else if (ii > 3 * A / 4) {
+                this.u[aa] = SamplerUtils.getGaussian(-anchorVal, anchorVar);
             } else {
                 this.u[aa] = SamplerUtils.getGaussian(mean, var);
             }
@@ -103,8 +92,8 @@ public class BayesianIdealPoint extends IdealPoint {
         this.x = new double[B];
         this.y = new double[B];
         for (int b = 0; b < B; b++) {
-//            this.x[b] = SamplerUtils.getGaussian(mean, var);
-//            this.y[b] = SamplerUtils.getGaussian(mean, var);
+            this.x[b] = SamplerUtils.getGaussian(mean, var);
+            this.y[b] = SamplerUtils.getGaussian(mean, var);
         }
     }
 

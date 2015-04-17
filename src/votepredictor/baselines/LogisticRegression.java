@@ -16,7 +16,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import optimization.OWLQNLogisticRegression;
-import optimization.RidgeLogisticRegressionLBFGS;
+import optimization.RidgeLogisticRegressionOptimizable;
 import sampling.util.SparseCount;
 import util.IOUtils;
 import util.MiscUtils;
@@ -343,7 +343,7 @@ public class LogisticRegression extends AbstractVotePredictor {
         }
 
         if (this.optType == OptType.LBFGS) {
-            RidgeLogisticRegressionLBFGS logreg = new RidgeLogisticRegressionLBFGS(
+            RidgeLogisticRegressionOptimizable logreg = new RidgeLogisticRegressionOptimizable(
                     labels, ws, designMatrix, mu, sigma);
             LimitedMemoryBFGS optimizer = new LimitedMemoryBFGS(logreg);
             boolean converged = false;
